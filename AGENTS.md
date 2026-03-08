@@ -5,6 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Rules
 
 - **Always update README.md** when adding, removing, or changing CLI options/configuration. The README is the user-facing docs and must stay in sync with the actual `--flags` in `statusline.py`.
+- **Always bump version before push.** Increment the patch version in both `pyproject.toml` and `claude_counter/__init__.py` when making any functional change.
 
 ## Project Overview
 

@@ -232,7 +232,7 @@ def get_git_branch(cwd):
 
 
 def get_git_worktree(cwd):
-    """Return worktree name if cwd is inside a linked worktree, else None."""
+    """Return (worktree_name, repo_name) if cwd is inside a linked worktree, else (None, None)."""
     try:
         # Get the common .git dir (bare repo or main worktree's .git)
         common = subprocess.run(
@@ -245,16 +245,22 @@ def get_git_worktree(cwd):
             cwd=cwd, capture_output=True, text=True, timeout=2,
         )
         if common.returncode != 0 or current.returncode != 0:
-            return None
+            return None, None
         common_dir = os.path.realpath(common.stdout.strip())
         current_dir = os.path.realpath(current.stdout.strip())
         # If they differ, we're in a linked worktree
         if common_dir != current_dir:
-            # Worktree .git dir is like <common>/worktrees/<name>
-            return os.path.basename(current_dir)
+            worktree_name = os.path.basename(current_dir)
+            # Repo name: common_dir is <repo>/.git or <repo>/.git/worktrees/..
+            # For a regular repo, common_dir ends with .git
+            repo_dir = common_dir
+            if os.path.basename(repo_dir) == ".git":
+                repo_dir = os.path.dirname(repo_dir)
+            repo_name = os.path.basename(repo_dir)
+            return worktree_name, repo_name
     except (OSError, subprocess.TimeoutExpired):
         pass
-    return None
+    return None, None
 
 
 def progress_bar(pct, style_name, width=BAR_WIDTH):
@@ -782,20 +788,25 @@ def main():
 
     parts = []
 
-    # ── Current directory ─────────────────────────────────────────
+    # ── Current directory + Git branch/worktree ───────────────────
     cwd = (data.get("workspace") or {}).get("current_dir") or data.get("cwd") or ""
-    if cwd:
-        parts.append(f"{CYAN}{fmt_dir(cwd)}{RESET}")
-
-    # ── Git branch + worktree ────────────────────────────────────
+    dir_name = fmt_dir(cwd) if cwd else ""
+    git_part = ""
     if args.git and cwd:
         branch = get_git_branch(cwd)
         if branch:
-            worktree = get_git_worktree(cwd)
-            if worktree:
-                parts.append(f"{DIM}⎇ {branch} [{worktree}]{RESET}")
+            worktree_name, repo_name = get_git_worktree(cwd)
+            if worktree_name:
+                # In a worktree: show repo name as dir, ⎇ worktree name
+                if repo_name:
+                    dir_name = repo_name
+                git_part = f"{DIM}⎇ {worktree_name}{RESET}"
             else:
-                parts.append(f"{DIM}⎇ {branch}{RESET}")
+                git_part = f"{DIM} {branch}{RESET}"
+    if dir_name:
+        parts.append(f"{CYAN}{dir_name}{RESET}")
+    if git_part:
+        parts.append(git_part)
 
     # ── Model ─────────────────────────────────────────────────────
     model_name = model_data.get("display_name") or ""
