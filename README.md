@@ -84,7 +84,7 @@ Then use `"command": "claude-counter"` (with any flags).
 
 Claude Code sends JSON via stdin after each assistant message. The script reads `context_window`, `model`, and `workspace` fields and renders a compact status line with ANSI colors.
 
-Run `claude-counter --sync` once to backfill historical costs from Claude Code transcripts (`~/.claude/projects/*/*.jsonl`). It scans all sessions in the current billing period and populates the cost state. After that, costs accumulate automatically on each statusline update.
+Run `claude-counter --sync` to backfill historical costs from Claude Code transcripts (`~/.claude/projects/*/*.jsonl`). It also fetches the latest model pricing from [LiteLLM](https://github.com/BerriAI/litellm). Scans all sessions in the current billing period (deduplicated by request ID) and populates the cost state. After that, costs accumulate automatically on each statusline update. Run periodically to keep pricing current.
 
 Estimated API cost shows what the current session's token usage would cost on the Anthropic API, with per-model pricing (Opus/Sonnet/Haiku) and cache discounts (reads at 10%, writes at 125% of input price). Costs are accumulated across sessions in `~/.claude/.claude-counter-cost-state.json` — daily totals shown on the 5h bar, weekly totals on the 7d bar (auto-prunes after 7 days). Pricing source: [she-llac.com/claude-limits](https://she-llac.com/claude-limits).
 

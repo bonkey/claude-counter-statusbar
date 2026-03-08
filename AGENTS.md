@@ -48,7 +48,11 @@ Estimated API cost is calculated per-model with cache discounts. Default pricing
 
 ## Historical sync
 
-`claude-counter --sync` scans `~/.claude/projects/*/*.jsonl` transcript files to backfill cost data from past sessions. Only processes files modified within the current billing period. Run once to populate historical costs.
+`claude-counter --sync` does two things:
+1. **Updates pricing** from LiteLLM's model pricing database (base input/output prices; cache write factor kept at 2.0x for Claude Code's 1-hour caching)
+2. **Scans transcripts** in `~/.claude/projects/*/*.jsonl` to backfill cost data from past sessions (deduplicated by `requestId` to avoid counting streaming updates)
+
+Only processes files modified within the current billing period. Run periodically to update pricing and recalculate costs.
 
 ## Config file
 

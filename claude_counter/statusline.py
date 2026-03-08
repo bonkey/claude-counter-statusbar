@@ -391,6 +391,66 @@ def update_accumulated_costs(session_id, session_cost, five_hour_resets_at, seve
 
 # ── Historical transcript sync ───────────────────────────────────────
 TRANSCRIPT_DIR = os.path.expanduser("~/.claude/projects")
+LITELLM_PRICING_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+
+
+def fetch_and_update_pricing():
+    """Fetch latest pricing from LiteLLM and update config file.
+
+    Uses LiteLLM for base input/output prices. Cache write factor is kept
+    from config (default 2.0x for 1-hour caching used by Claude Code).
+    """
+    global API_PRICING
+
+    try:
+        req = urllib.request.Request(LITELLM_PRICING_URL, method="GET")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+    except (urllib.error.URLError, json.JSONDecodeError, OSError, TimeoutError):
+        return False
+
+    # Map model patterns to LiteLLM keys
+    model_map = {
+        "opus": "claude-opus-4-6",
+        "sonnet": "claude-sonnet-4-6",
+        "haiku": "claude-haiku-4-5-20251001",
+    }
+
+    updated = {}
+    for our_key, litellm_key in model_map.items():
+        model_data = data.get(litellm_key)
+        if not model_data:
+            continue
+        inp = model_data.get("input_cost_per_token", 0)
+        out = model_data.get("output_cost_per_token", 0)
+        if inp > 0 and out > 0:
+            # Convert per-token to per-M
+            updated[our_key] = [round(inp * 1_000_000, 2), round(out * 1_000_000, 2)]
+
+    if not updated:
+        return False
+
+    # Update config file
+    try:
+        with open(CONFIG_FILE) as f:
+            config = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        config = {}
+
+    config.setdefault("pricing", {}).update(updated)
+    config["pricing_updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    try:
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+    except OSError:
+        return False
+
+    # Update in-memory pricing
+    for key, prices in updated.items():
+        API_PRICING[key] = (prices[0], prices[1])
+
+    return True
 
 
 def _estimate_cost_from_usage(usage, model_str):
@@ -649,6 +709,11 @@ def main():
 
     # ── Sync mode (standalone) ────────────────────────────────────
     if args.sync:
+        print("Updating pricing from LiteLLM…", file=sys.stderr)
+        if fetch_and_update_pricing():
+            print(f"  Pricing updated: {dict(API_PRICING)}", file=sys.stderr)
+        else:
+            print("  Using cached pricing (fetch failed or unchanged)", file=sys.stderr)
         print(f"Scanning transcripts in {TRANSCRIPT_DIR}…", file=sys.stderr)
         sessions, total = sync_historical_costs()
         print(f"Done: {sessions} sessions, ~{fmt_cost(total)} billing period total", file=sys.stderr)
