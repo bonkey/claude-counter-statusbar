@@ -2,10 +2,10 @@
 """Claude Counter — Claude Code statusline.
 
 Reads JSON from stdin (provided by Claude Code) and outputs a formatted
-status line with token usage, cache status, daily/weekly cost, model, and cwd.
+status line with token usage, cache status, rate limit utilization, model, and cwd.
 
 Usage:
-  claude-counter [--style=STYLE] [--daily-budget=USD] [--weekly-budget=USD] [--git]
+  claude-counter [--style=STYLE] [--git] [--no-usage]
 
 Styles (from claude-powerline): text, bar, ball, capped, dots (default), filled
 Separator auto-matches the bar style (override with --separator).
@@ -14,15 +14,19 @@ Separator auto-matches the bar style (override with --separator).
 import argparse
 import json
 import os
+import platform
 import subprocess
 import sys
 import time
+import urllib.request
+import urllib.error
 
 # ── Config ────────────────────────────────────────────────────────────
 BAR_WIDTH = 10
 WARN_PCT = 80
 CRIT_PCT = 95
-STATE_FILE = os.path.expanduser("~/.claude/.claude-counter-state.json")
+USAGE_CACHE_FILE = os.path.expanduser("~/.claude/.claude-counter-usage-cache.json")
+USAGE_CACHE_TTL = 15  # seconds — avoid hammering the API on every statusline update
 
 # ANSI escape helpers
 RESET = "\033[0m"
@@ -56,6 +60,12 @@ STYLE_SEPARATORS = {
     "filled": "■",
 }
 
+USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage"
+USAGE_API_HEADERS = {
+    "anthropic-beta": "oauth-2025-04-20",
+    "Content-Type": "application/json",
+}
+
 
 # ── Formatting ────────────────────────────────────────────────────────
 def fmt_tokens(n):
@@ -64,16 +74,6 @@ def fmt_tokens(n):
     if n >= 1_000:
         return f"{n / 1_000:.1f}k"
     return str(n)
-
-
-def fmt_cost(usd):
-    if usd >= 1.0:
-        return f"${usd:.2f}"
-    if usd >= 0.01:
-        return f"${usd:.2f}"
-    if usd > 0:
-        return f"${usd:.3f}"
-    return "$0.00"
 
 
 def fmt_pct(pct):
@@ -89,6 +89,30 @@ def fmt_dir(cwd):
     if home and cwd.startswith(home):
         cwd = "~" + cwd[len(home):]
     return os.path.basename(cwd) or cwd
+
+
+def fmt_reset(resets_at):
+    """Format resets_at ISO timestamp as a compact relative string."""
+    try:
+        # Parse ISO 8601 with timezone
+        ts = resets_at.replace("+00:00", "Z").replace("Z", "+00:00")
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(ts)
+        now = datetime.now(timezone.utc)
+        delta = (dt - now).total_seconds()
+        if delta <= 0:
+            return "now"
+        if delta < 3600:
+            return f"{int(delta / 60)}m"
+        if delta < 86400:
+            h = int(delta / 3600)
+            m = int((delta % 3600) / 60)
+            return f"{h}h{m:02d}m" if m else f"{h}h"
+        d = int(delta / 86400)
+        h = int((delta % 86400) / 3600)
+        return f"{d}d{h}h" if h else f"{d}d"
+    except Exception:
+        return ""
 
 
 def get_git_branch(cwd):
@@ -136,55 +160,112 @@ def progress_bar(pct, style_name, width=BAR_WIDTH):
     return f"{color}{filled_ch * filled_count}{GRAY}{empty_ch * empty_count}{RESET}"
 
 
-def cost_segment(label, pct, cost, style_name):
+def usage_segment(label, pct, resets_at, style_name):
     pct_s = fmt_pct(pct)
-    cost_s = fmt_cost(cost)
+    reset_s = fmt_reset(resets_at)
+    reset_part = f" {DIM}{reset_s}{RESET}" if reset_s else ""
     if style_name == "text":
-        return f"{label} {pct_s} {cost_s}"
+        return f"{label} {pct_s}{reset_part}"
     bar = progress_bar(pct, style_name)
-    return f"{label} {bar} {pct_s} {cost_s}"
+    return f"{label} {bar} {pct_s}{reset_part}"
 
 
-# ── Cost tracking ────────────────────────────────────────────────────
-def load_state():
+# ── OAuth token retrieval ─────────────────────────────────────────────
+def get_oauth_token():
+    """Retrieve Claude Code OAuth access token from OS credential store."""
+    system = platform.system()
+
+    if system == "Darwin":
+        # macOS: read from Keychain
+        # Multiple entries may exist — find accounts with claudeAiOauth tokens
+        try:
+            result = subprocess.run(
+                ["security", "dump-keychain"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                accounts = []
+                lines = result.stdout.splitlines()
+                in_creds_entry = False
+                for line in lines:
+                    if '"Claude Code-credentials"' in line and "0x00000007" in line:
+                        in_creds_entry = True
+                    elif in_creds_entry and '"acct"<blob>=' in line:
+                        acct = line.split('"acct"<blob>="', 1)[-1].rstrip('"') if '"acct"<blob>="' in line else ""
+                        if acct:
+                            accounts.append(acct)
+                        in_creds_entry = False
+
+                for acct in accounts:
+                    try:
+                        r = subprocess.run(
+                            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-a", acct, "-w"],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        if r.returncode == 0:
+                            creds = json.loads(r.stdout.strip())
+                            token = creds.get("claudeAiOauth", {}).get("accessToken")
+                            if token:
+                                return token
+                    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+                        continue
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        # Linux/WSL: read from credentials file
+        creds_file = os.path.expanduser("~/.claude/.credentials.json")
+        try:
+            with open(creds_file) as f:
+                creds = json.load(f)
+                return creds.get("claudeAiOauth", {}).get("accessToken")
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            pass
+
+    return None
+
+
+# ── Usage data fetching with cache ────────────────────────────────────
+def load_usage_cache():
     try:
-        with open(STATE_FILE) as f:
+        with open(USAGE_CACHE_FILE) as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
 
 
-def save_state(state):
+def save_usage_cache(data):
     try:
-        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f)
+        os.makedirs(os.path.dirname(USAGE_CACHE_FILE), exist_ok=True)
+        with open(USAGE_CACHE_FILE, "w") as f:
+            json.dump(data, f)
     except OSError:
         pass
 
 
-def update_costs(session_id, session_cost):
-    state = load_state()
-    daily = state.get("daily", {})
+def fetch_usage():
+    """Fetch rate limit usage from Anthropic OAuth API, with caching."""
+    cache = load_usage_cache()
+    cached_at = cache.get("_cached_at", 0)
 
-    today = time.strftime("%Y-%m-%d")
+    if time.time() - cached_at < USAGE_CACHE_TTL:
+        return cache
 
-    today_sessions = daily.get(today, {})
-    today_sessions[session_id] = session_cost
-    daily[today] = today_sessions
+    token = get_oauth_token()
+    if not token:
+        return cache if cache else None
 
-    cutoff = time.strftime("%Y-%m-%d", time.localtime(time.time() - 7 * 86400))
-    daily = {d: s for d, s in daily.items() if d >= cutoff}
+    try:
+        headers = dict(USAGE_API_HEADERS)
+        headers["Authorization"] = f"Bearer {token}"
 
-    state["daily"] = daily
-    save_state(state)
-
-    daily_total = sum(daily.get(today, {}).values())
-    weekly_total = sum(
-        cost for day_sessions in daily.values()
-        for cost in day_sessions.values()
-    )
-    return daily_total, weekly_total
+        req = urllib.request.Request(USAGE_API_URL, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+            data["_cached_at"] = time.time()
+            save_usage_cache(data)
+            return data
+    except (urllib.error.URLError, json.JSONDecodeError, OSError, TimeoutError):
+        return cache if cache else None
 
 
 # ── Main ──────────────────────────────────────────────────────────────
@@ -201,16 +282,12 @@ def main():
         help="Separator character (default: matches bar style)",
     )
     parser.add_argument(
-        "--daily-budget", type=float, default=10.0,
-        help="Daily cost budget in USD (default: $10)",
-    )
-    parser.add_argument(
-        "--weekly-budget", type=float, default=50.0,
-        help="Weekly cost budget in USD (default: $50)",
-    )
-    parser.add_argument(
         "--git", action="store_true",
         help="Show current git branch",
+    )
+    parser.add_argument(
+        "--no-usage", action="store_true",
+        help="Disable rate limit usage bars (skip API call)",
     )
     args = parser.parse_args()
 
@@ -224,7 +301,6 @@ def main():
         return
 
     ctx = data.get("context_window") or {}
-    cost_data = data.get("cost") or {}
     model_data = data.get("model") or {}
 
     parts = []
@@ -275,22 +351,22 @@ def main():
         bar = progress_bar(used_pct, args.style)
         parts.append(f"{bar} {pct_str}{cache_str}")
 
-    # ── Daily + weekly cost ───────────────────────────────────────
-    session_id = data.get("session_id") or ""
-    session_cost = cost_data.get("total_cost_usd") or 0
-    daily_total = 0.0
-    weekly_total = 0.0
+    # ── Rate limit usage (session + weekly) ────────────────────────
+    if not args.no_usage:
+        usage = fetch_usage()
+        if usage:
+            five_hour = usage.get("five_hour") or {}
+            seven_day = usage.get("seven_day") or {}
 
-    if session_id:
-        daily_total, weekly_total = update_costs(session_id, session_cost)
+            session_pct = five_hour.get("utilization", 0)
+            session_reset = five_hour.get("resets_at", "")
+            if session_pct is not None:
+                parts.append(usage_segment("5h", session_pct, session_reset, args.style))
 
-    if daily_total > 0:
-        daily_pct = min(100.0, (daily_total / args.daily_budget) * 100) if args.daily_budget > 0 else 0
-        parts.append(cost_segment("1d", daily_pct, daily_total, args.style))
-
-    if weekly_total > 0:
-        weekly_pct = min(100.0, (weekly_total / args.weekly_budget) * 100) if args.weekly_budget > 0 else 0
-        parts.append(cost_segment("7d", weekly_pct, weekly_total, args.style))
+            weekly_pct = seven_day.get("utilization", 0)
+            weekly_reset = seven_day.get("resets_at", "")
+            if weekly_pct is not None:
+                parts.append(usage_segment("7d", weekly_pct, weekly_reset, args.style))
 
     print(sep.join(parts))
 

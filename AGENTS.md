@@ -33,13 +33,12 @@ Single Python package, no external dependencies. Installable directly from git v
 |------|---------|-------------|
 | `--style` | `dots` | Bar style: text, bar, ball, capped, dots, filled |
 | `--separator` | (matches style) | Separator character between segments |
-| `--daily-budget` | `10.0` | Daily cost budget in USD |
-| `--weekly-budget` | `50.0` | Weekly cost budget in USD |
 | `--git` | off | Show current git branch |
+| `--no-usage` | off | Disable rate limit usage bars (skip API call) |
 
-## State file
+## Rate limit usage
 
-`~/.claude/.claude-counter-state.json` stores per-session costs grouped by date for daily/weekly aggregation. Auto-prunes entries older than 7 days.
+Session (5h) and weekly (7d) utilization is fetched from `https://api.anthropic.com/api/oauth/usage` using the OAuth token from Claude Code's credential store (macOS Keychain `Claude Code-credentials` or `~/.claude/.credentials.json` on Linux). Results are cached in `~/.claude/.claude-counter-usage-cache.json` for 15 seconds.
 
 ## Install pattern
 
@@ -70,5 +69,5 @@ Update both locations:
 ## Testing
 
 ```bash
-echo '{"session_id":"test","cwd":"/tmp/myapp","model":{"display_name":"Opus"},"context_window":{"total_input_tokens":15000,"total_output_tokens":4000,"context_window_size":200000,"used_percentage":8,"current_usage":{"cache_read_input_tokens":12000}},"cost":{"total_cost_usd":0.12}}' | python3 -m claude_counter.statusline --style=dots --git
+echo '{"session_id":"test","cwd":"/tmp/myapp","model":{"display_name":"Opus"},"context_window":{"total_input_tokens":15000,"total_output_tokens":4000,"context_window_size":200000,"used_percentage":8,"current_usage":{"cache_read_input_tokens":12000}}}' | python3 -m claude_counter.statusline --style=dots --git
 ```
