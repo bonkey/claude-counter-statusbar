@@ -2,10 +2,10 @@
 """Claude Counter — Claude Code statusline.
 
 Reads JSON from stdin (provided by Claude Code) and outputs a formatted
-status line with token usage, cache status, session/weekly cost, model, and cwd.
+status line with token usage, cache status, daily/weekly cost, model, and cwd.
 
 Usage:
-  claude-counter [--style=STYLE] [--weekly-budget=USD]
+  claude-counter [--style=STYLE] [--daily-budget=USD] [--weekly-budget=USD] [--git]
 
 Styles (from claude-powerline): text, bar, ball, capped, dots (default), filled
 """
@@ -13,6 +13,7 @@ Styles (from claude-powerline): text, bar, ball, capped, dots (default), filled
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -64,11 +65,32 @@ def fmt_cost(usd):
     return "$0.00"
 
 
+def fmt_pct(pct):
+    if pct >= CRIT_PCT:
+        return f"{RED}{BOLD}{pct:.0f}%{RESET}"
+    if pct >= WARN_PCT:
+        return f"{YELLOW}{pct:.0f}%{RESET}"
+    return f"{pct:.0f}%"
+
+
 def fmt_dir(cwd):
     home = os.environ.get("HOME", "")
     if home and cwd.startswith(home):
         cwd = "~" + cwd[len(home):]
     return os.path.basename(cwd) or cwd
+
+
+def get_git_branch(cwd):
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=cwd, capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
 
 
 def progress_bar(pct, style_name, width=BAR_WIDTH):
@@ -87,13 +109,11 @@ def progress_bar(pct, style_name, width=BAR_WIDTH):
     filled_ch, empty_ch, cap_ch, marker_ch = BAR_STYLES[style_name]
 
     if marker_ch:
-        # Ball style: line with a marker dot at the position
         pos = min(filled_count, width - 1)
         bar = filled_ch * pos + marker_ch + empty_ch * (width - pos - 1)
         return f"{color}{bar}{RESET}"
 
     if cap_ch:
-        # Capped style: filled with a cap at the end
         if filled_count == 0:
             bar = cap_ch + empty_ch * (width - 1)
         elif filled_count >= width:
@@ -102,11 +122,20 @@ def progress_bar(pct, style_name, width=BAR_WIDTH):
             bar = filled_ch * (filled_count - 1) + cap_ch + empty_ch * empty_count
         return f"{color}{bar}{RESET}"
 
-    # Standard: filled + empty
     return f"{color}{filled_ch * filled_count}{GRAY}{empty_ch * empty_count}{RESET}"
 
 
-# ── Weekly cost tracking ──────────────────────────────────────────────
+def cost_segment(label, pct, cost, style_name):
+    """Render a cost segment: `label BAR PCT $COST` or `label PCT $COST` for text."""
+    pct_s = fmt_pct(pct)
+    cost_s = fmt_cost(cost)
+    if style_name == "text":
+        return f"{label} {pct_s} {cost_s}"
+    bar = progress_bar(pct, style_name)
+    return f"{label} {bar} {pct_s} {cost_s}"
+
+
+# ── Cost tracking ────────────────────────────────────────────────────
 def load_state():
     try:
         with open(STATE_FILE) as f:
@@ -124,14 +153,13 @@ def save_state(state):
         pass
 
 
-def update_weekly(session_id, session_cost):
-    """Track per-session costs by date for weekly aggregation."""
+def update_costs(session_id, session_cost):
+    """Track per-session costs by date. Returns (daily_total, weekly_total)."""
     state = load_state()
     daily = state.get("daily", {})
 
     today = time.strftime("%Y-%m-%d")
 
-    # Record this session's cost for today
     today_sessions = daily.get(today, {})
     today_sessions[session_id] = session_cost
     daily[today] = today_sessions
@@ -143,12 +171,12 @@ def update_weekly(session_id, session_cost):
     state["daily"] = daily
     save_state(state)
 
-    # Sum all sessions across the week
+    daily_total = sum(daily.get(today, {}).values())
     weekly_total = sum(
         cost for day_sessions in daily.values()
         for cost in day_sessions.values()
     )
-    return weekly_total
+    return daily_total, weekly_total
 
 
 # ── Main ──────────────────────────────────────────────────────────────
@@ -161,10 +189,16 @@ def main():
         help="Progress bar style (default: dots)",
     )
     parser.add_argument(
-        "--weekly-budget",
-        type=float,
-        default=50.0,
-        help="Weekly cost budget in USD for the progress bar (default: $50)",
+        "--daily-budget", type=float, default=10.0,
+        help="Daily cost budget in USD (default: $10)",
+    )
+    parser.add_argument(
+        "--weekly-budget", type=float, default=50.0,
+        help="Weekly cost budget in USD (default: $50)",
+    )
+    parser.add_argument(
+        "--git", action="store_true",
+        help="Show current git branch",
     )
     args = parser.parse_args()
 
@@ -185,6 +219,12 @@ def main():
     if cwd:
         parts.append(f"{CYAN}{fmt_dir(cwd)}{RESET}")
 
+    # ── Git branch ────────────────────────────────────────────────
+    if args.git and cwd:
+        branch = get_git_branch(cwd)
+        if branch:
+            parts.append(f"{DIM}⎇ {branch}{RESET}")
+
     # ── Model ─────────────────────────────────────────────────────
     model_name = model_data.get("display_name") or ""
     if model_name:
@@ -201,19 +241,13 @@ def main():
     used_pct = used_pct or 0
 
     total_tokens = total_input + total_output
-
-    if used_pct >= CRIT_PCT:
-        pct_str = f"{RED}{BOLD}{used_pct:.0f}%{RESET}"
-    elif used_pct >= WARN_PCT:
-        pct_str = f"{YELLOW}{used_pct:.0f}%{RESET}"
-    else:
-        pct_str = f"{used_pct:.0f}%"
+    pct_str = fmt_pct(used_pct)
 
     if args.style == "text":
-        parts.append(f"~{fmt_tokens(total_tokens)} {pct_str}")
+        parts.append(f"🔤 ~{fmt_tokens(total_tokens)} {pct_str}")
     else:
         bar = progress_bar(used_pct, args.style)
-        parts.append(f"{bar} {pct_str}")
+        parts.append(f"🔤 {bar} {pct_str}")
 
     # ── Cache status ──────────────────────────────────────────────
     current = ctx.get("current_usage") or {}
@@ -225,29 +259,22 @@ def main():
     elif cache_creation > 0:
         parts.append(f"{DIM}📝{fmt_tokens(cache_creation)}{RESET}")
 
-    # ── Session cost ──────────────────────────────────────────────
-    session_cost = cost_data.get("total_cost_usd") or 0
-    if session_cost > 0:
-        parts.append(fmt_cost(session_cost))
-
-    # ── Weekly cost ───────────────────────────────────────────────
+    # ── Daily + weekly cost ───────────────────────────────────────
     session_id = data.get("session_id") or ""
+    session_cost = cost_data.get("total_cost_usd") or 0
+    daily_total = 0.0
     weekly_total = 0.0
+
     if session_id:
-        weekly_total = update_weekly(session_id, session_cost)
+        daily_total, weekly_total = update_costs(session_id, session_cost)
+
+    if daily_total > 0:
+        daily_pct = min(100.0, (daily_total / args.daily_budget) * 100) if args.daily_budget > 0 else 0
+        parts.append(cost_segment("dy", daily_pct, daily_total, args.style))
+
     if weekly_total > 0:
         weekly_pct = min(100.0, (weekly_total / args.weekly_budget) * 100) if args.weekly_budget > 0 else 0
-        if args.style == "text":
-            wk_label = fmt_cost(weekly_total)
-            if weekly_pct >= CRIT_PCT:
-                parts.append(f"wk {RED}{BOLD}{wk_label}{RESET}")
-            elif weekly_pct >= WARN_PCT:
-                parts.append(f"wk {YELLOW}{wk_label}{RESET}")
-            else:
-                parts.append(f"wk {wk_label}")
-        else:
-            wk_bar = progress_bar(weekly_pct, args.style)
-            parts.append(f"wk {wk_bar} {fmt_cost(weekly_total)}")
+        parts.append(cost_segment("wk", weekly_pct, weekly_total, args.style))
 
     # ── Lines changed ─────────────────────────────────────────────
     lines_added = cost_data.get("total_lines_added") or 0
@@ -258,7 +285,7 @@ def main():
             line_parts.append(f"{GREEN}+{lines_added}{RESET}")
         if lines_removed > 0:
             line_parts.append(f"{RED}-{lines_removed}{RESET}")
-        parts.append("/".join(line_parts))
+        parts.append(f"✏️ {'/'.join(line_parts)}")
 
     print(" │ ".join(parts))
 
