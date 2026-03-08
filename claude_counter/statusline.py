@@ -8,6 +8,7 @@ Usage:
   claude-counter [--style=STYLE] [--daily-budget=USD] [--weekly-budget=USD] [--git]
 
 Styles (from claude-powerline): text, bar, ball, capped, dots (default), filled
+Separator auto-matches the bar style (override with --separator).
 """
 
 import argparse
@@ -36,13 +37,23 @@ CYAN = "\033[36m"
 MAGENTA = "\033[35m"
 
 # ── Bar styles (credit: Owloops/claude-powerline) ─────────────────────
-# Each style defines (filled_char, empty_char, cap_char, marker_char)
+# (filled_char, empty_char, cap_char, marker_char)
 BAR_STYLES = {
     "bar":    ("█", "░", None, None),
     "ball":   ("─", "─", None, "●"),
     "capped": ("━", "┄", "╸", None),
     "dots":   ("●", "○", None, None),
     "filled": ("■", "□", None, None),
+}
+
+# Default separator per style — uses the filled char, colored
+STYLE_SEPARATORS = {
+    "text":   "·",
+    "bar":    "█",
+    "ball":   "●",
+    "capped": "━",
+    "dots":   "●",
+    "filled": "■",
 }
 
 
@@ -126,7 +137,6 @@ def progress_bar(pct, style_name, width=BAR_WIDTH):
 
 
 def cost_segment(label, pct, cost, style_name):
-    """Render a cost segment: `label BAR PCT $COST` or `label PCT $COST` for text."""
     pct_s = fmt_pct(pct)
     cost_s = fmt_cost(cost)
     if style_name == "text":
@@ -154,7 +164,6 @@ def save_state(state):
 
 
 def update_costs(session_id, session_cost):
-    """Track per-session costs by date. Returns (daily_total, weekly_total)."""
     state = load_state()
     daily = state.get("daily", {})
 
@@ -164,7 +173,6 @@ def update_costs(session_id, session_cost):
     today_sessions[session_id] = session_cost
     daily[today] = today_sessions
 
-    # Prune entries older than 7 days
     cutoff = time.strftime("%Y-%m-%d", time.localtime(time.time() - 7 * 86400))
     daily = {d: s for d, s in daily.items() if d >= cutoff}
 
@@ -189,6 +197,10 @@ def main():
         help="Progress bar style (default: dots)",
     )
     parser.add_argument(
+        "--separator", type=str, default=None,
+        help="Separator character (default: matches bar style)",
+    )
+    parser.add_argument(
         "--daily-budget", type=float, default=10.0,
         help="Daily cost budget in USD (default: $10)",
     )
@@ -201,6 +213,9 @@ def main():
         help="Show current git branch",
     )
     args = parser.parse_args()
+
+    sep_char = args.separator or STYLE_SEPARATORS.get(args.style, "·")
+    sep = f" {GRAY}{sep_char}{RESET} "
 
     try:
         data = json.load(sys.stdin)
@@ -230,7 +245,7 @@ def main():
     if model_name:
         parts.append(f"{MAGENTA}{model_name}{RESET}")
 
-    # ── Token count + progress bar ────────────────────────────────
+    # ── Token count + progress bar + cache (grouped) ──────────────
     total_input = ctx.get("total_input_tokens") or 0
     total_output = ctx.get("total_output_tokens") or 0
     context_size = ctx.get("context_window_size") or 200_000
@@ -243,21 +258,22 @@ def main():
     total_tokens = total_input + total_output
     pct_str = fmt_pct(used_pct)
 
-    if args.style == "text":
-        parts.append(f"~{fmt_tokens(total_tokens)} {pct_str}")
-    else:
-        bar = progress_bar(used_pct, args.style)
-        parts.append(f"{bar} {pct_str}")
-
-    # ── Cache status ──────────────────────────────────────────────
+    # Cache info (appended to token segment, no separator)
     current = ctx.get("current_usage") or {}
     cache_read = current.get("cache_read_input_tokens") or 0
     cache_creation = current.get("cache_creation_input_tokens") or 0
 
+    cache_str = ""
     if cache_read > 0:
-        parts.append(f"{GREEN}⚡{fmt_tokens(cache_read)}{RESET}")
+        cache_str = f" {GREEN}⚡{fmt_tokens(cache_read)}{RESET}"
     elif cache_creation > 0:
-        parts.append(f"{DIM}📝{fmt_tokens(cache_creation)}{RESET}")
+        cache_str = f" {DIM}📝{fmt_tokens(cache_creation)}{RESET}"
+
+    if args.style == "text":
+        parts.append(f"~{fmt_tokens(total_tokens)} {pct_str}{cache_str}")
+    else:
+        bar = progress_bar(used_pct, args.style)
+        parts.append(f"{bar} {pct_str}{cache_str}")
 
     # ── Daily + weekly cost ───────────────────────────────────────
     session_id = data.get("session_id") or ""
@@ -276,18 +292,7 @@ def main():
         weekly_pct = min(100.0, (weekly_total / args.weekly_budget) * 100) if args.weekly_budget > 0 else 0
         parts.append(cost_segment("7d", weekly_pct, weekly_total, args.style))
 
-    # ── Lines changed ─────────────────────────────────────────────
-    lines_added = cost_data.get("total_lines_added") or 0
-    lines_removed = cost_data.get("total_lines_removed") or 0
-    if lines_added > 0 or lines_removed > 0:
-        line_parts = []
-        if lines_added > 0:
-            line_parts.append(f"{GREEN}+{lines_added}{RESET}")
-        if lines_removed > 0:
-            line_parts.append(f"{RED}-{lines_removed}{RESET}")
-        parts.append(f"✏️ {'/'.join(line_parts)}")
-
-    print(" │ ".join(parts))
+    print(sep.join(parts))
 
 
 if __name__ == "__main__":
