@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Claude Counter is a Claude Code statusline script that displays:
 - Current directory and model name
-- Git branch (optional, `--git`)
+- Git branch + worktree name (optional, `--git`)
 - Token count with progress bar (6 styles) + cache status
 - Daily cost bar (1d) with configurable budget
 - Weekly cost bar (7d) with configurable budget
@@ -44,7 +44,7 @@ Session (5h) and weekly (7d) utilization is fetched from `https://api.anthropic.
 
 ## Cost estimation
 
-Estimated API cost is calculated per-model with cache discounts. Default pricing (overridable via config file): Opus $15/$75, Sonnet $3/$15, Haiku $0.80/$4 per M tokens; cache reads 10%, writes 125% of input price. Per-session costs are accumulated in `~/.claude/.claude-counter-cost-state.json` — 5h totals, 7d totals, and billing period total (resets on `billing_day` from config, default 1st). Source: https://she-llac.com/claude-limits
+Estimated API cost is calculated per-model with cache discounts. Pricing is auto-fetched from LiteLLM and cached in `~/.claude/.claude-counter-pricing-cache.json` (24h TTL). Cache reads at 10%, writes at 200% of input price (1-hour caching used by Claude Code). Per-session costs are accumulated in `~/.claude/.claude-counter-cost-state.json` — 5h totals, 7d totals, and billing period total (resets on `billing_day` from config, default 1st).
 
 ## Historical sync
 
@@ -78,7 +78,7 @@ All fields are optional — missing keys fall back to built-in defaults.
 - `ball`: `────●─────` separator `●`
 - `capped`: `━━━╸┄┄┄┄┄┄` separator `━`
 - `filled`: `■■■■□□□□□□` separator `■`
-- `text`: `~19.0k 40%` separator `·`
+- `text`: `~19.0k 40%` separator `●`
 
 ## Version Bumping
 

@@ -28,6 +28,8 @@ from datetime import datetime, timezone
 CONFIG_FILE = os.path.expanduser("~/.claude/.claude-counter-config.json")
 USAGE_CACHE_FILE = os.path.expanduser("~/.claude/.claude-counter-usage-cache.json")
 COST_STATE_FILE = os.path.expanduser("~/.claude/.claude-counter-cost-state.json")
+PRICING_CACHE_FILE = os.path.expanduser("~/.claude/.claude-counter-pricing-cache.json")
+PRICING_CACHE_TTL = 86400  # 24 hours
 
 # ANSI escape helpers
 RESET = "\033[0m"
@@ -55,21 +57,23 @@ DEFAULT_CONFIG = {
         "filled": ["■", "□", None, None],
     },
     "separators": {
-        "text":   "·",
+        "text":   "●",
         "bar":    "█",
         "ball":   "●",
         "capped": "━",
         "dots":   "●",
         "filled": "■",
     },
-    "pricing": {
-        "opus":   [5.0, 25.0],
-        "sonnet": [3.0, 15.0],
-        "haiku":  [1.0, 5.0],
-    },
     "cache_read_factor": 0.10,
     "cache_write_factor": 2.0,
     "billing_day": 1,
+}
+
+# Hardcoded fallback — only used if LiteLLM fetch has never succeeded
+FALLBACK_PRICING = {
+    "opus":   (5.0, 25.0),
+    "sonnet": (3.0, 15.0),
+    "haiku":  (1.0, 5.0),
 }
 
 
@@ -117,13 +121,6 @@ def _load_config():
     # Separators
     cfg["separators"] = dict(get("separators"))
 
-    # Pricing: convert lists to tuples
-    raw_pricing = get("pricing")
-    cfg["pricing"] = {}
-    for model, prices in raw_pricing.items():
-        if isinstance(prices, list) and len(prices) == 2:
-            cfg["pricing"][model] = (float(prices[0]), float(prices[1]))
-
     return cfg
 
 
@@ -134,10 +131,28 @@ CRIT_PCT = CFG["crit_pct"]
 USAGE_CACHE_TTL = CFG["usage_cache_ttl"]
 BAR_STYLES = CFG["bar_styles"]
 STYLE_SEPARATORS = CFG["separators"]
-API_PRICING = CFG["pricing"]
 CACHE_READ_FACTOR = CFG["cache_read_factor"]
 CACHE_WRITE_FACTOR = CFG["cache_write_factor"]
 BILLING_DAY = CFG["billing_day"]
+
+
+def _load_pricing():
+    """Load pricing from cache file, falling back to hardcoded defaults."""
+    try:
+        with open(PRICING_CACHE_FILE) as f:
+            cache = json.load(f)
+        pricing = {}
+        for model, prices in cache.get("pricing", {}).items():
+            if isinstance(prices, list) and len(prices) == 2:
+                pricing[model] = (float(prices[0]), float(prices[1]))
+        if pricing:
+            return pricing
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return dict(FALLBACK_PRICING)
+
+
+API_PRICING = _load_pricing()
 
 USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage"
 USAGE_API_HEADERS = {
@@ -211,6 +226,32 @@ def get_git_branch(cwd):
         )
         if result.returncode == 0:
             return result.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def get_git_worktree(cwd):
+    """Return worktree name if cwd is inside a linked worktree, else None."""
+    try:
+        # Get the common .git dir (bare repo or main worktree's .git)
+        common = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=cwd, capture_output=True, text=True, timeout=2,
+        )
+        # Get the current worktree's .git dir
+        current = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            cwd=cwd, capture_output=True, text=True, timeout=2,
+        )
+        if common.returncode != 0 or current.returncode != 0:
+            return None
+        common_dir = os.path.realpath(common.stdout.strip())
+        current_dir = os.path.realpath(current.stdout.strip())
+        # If they differ, we're in a linked worktree
+        if common_dir != current_dir:
+            # Worktree .git dir is like <common>/worktrees/<name>
+            return os.path.basename(current_dir)
     except (OSError, subprocess.TimeoutExpired):
         pass
     return None
@@ -394,13 +435,24 @@ TRANSCRIPT_DIR = os.path.expanduser("~/.claude/projects")
 LITELLM_PRICING_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 
 
-def fetch_and_update_pricing():
-    """Fetch latest pricing from LiteLLM and update config file.
+def fetch_and_update_pricing(force=False):
+    """Fetch latest pricing from LiteLLM and cache locally.
 
+    Cached for 24h. Pass force=True to skip TTL check (used by --sync).
     Uses LiteLLM for base input/output prices. Cache write factor is kept
     from config (default 2.0x for 1-hour caching used by Claude Code).
     """
     global API_PRICING
+
+    # Check cache TTL
+    if not force:
+        try:
+            with open(PRICING_CACHE_FILE) as f:
+                cache = json.load(f)
+            if time.time() - cache.get("_cached_at", 0) < PRICING_CACHE_TTL:
+                return False  # still fresh
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            pass
 
     try:
         req = urllib.request.Request(LITELLM_PRICING_URL, method="GET")
@@ -430,19 +482,12 @@ def fetch_and_update_pricing():
     if not updated:
         return False
 
-    # Update config file
+    # Save to pricing cache file
+    cache = {"pricing": updated, "_cached_at": time.time()}
     try:
-        with open(CONFIG_FILE) as f:
-            config = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        config = {}
-
-    config.setdefault("pricing", {}).update(updated)
-    config["pricing_updated_at"] = datetime.now(timezone.utc).isoformat()
-
-    try:
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
+        os.makedirs(os.path.dirname(PRICING_CACHE_FILE), exist_ok=True)
+        with open(PRICING_CACHE_FILE, "w") as f:
+            json.dump(cache, f, indent=2)
     except OSError:
         return False
 
@@ -710,7 +755,7 @@ def main():
     # ── Sync mode (standalone) ────────────────────────────────────
     if args.sync:
         print("Updating pricing from LiteLLM…", file=sys.stderr)
-        if fetch_and_update_pricing():
+        if fetch_and_update_pricing(force=True):
             print(f"  Pricing updated: {dict(API_PRICING)}", file=sys.stderr)
         else:
             print("  Using cached pricing (fetch failed or unchanged)", file=sys.stderr)
@@ -718,6 +763,10 @@ def main():
         sessions, total = sync_historical_costs()
         print(f"Done: {sessions} sessions, ~{fmt_cost(total)} billing period total", file=sys.stderr)
         return
+
+    # Auto-refresh pricing if cache is stale (24h TTL, non-blocking)
+    if not args.no_cost:
+        fetch_and_update_pricing()
 
     sep_char = args.separator or STYLE_SEPARATORS.get(args.style, "·")
     sep = f" {GRAY}{sep_char}{RESET} "
@@ -738,11 +787,15 @@ def main():
     if cwd:
         parts.append(f"{CYAN}{fmt_dir(cwd)}{RESET}")
 
-    # ── Git branch ────────────────────────────────────────────────
+    # ── Git branch + worktree ────────────────────────────────────
     if args.git and cwd:
         branch = get_git_branch(cwd)
         if branch:
-            parts.append(f"{DIM}⎇ {branch}{RESET}")
+            worktree = get_git_worktree(cwd)
+            if worktree:
+                parts.append(f"{DIM}⎇ {branch} [{worktree}]{RESET}")
+            else:
+                parts.append(f"{DIM}⎇ {branch}{RESET}")
 
     # ── Model ─────────────────────────────────────────────────────
     model_name = model_data.get("display_name") or ""
@@ -821,7 +874,7 @@ def main():
 
             # Billing period total
             if not args.no_cost and billing_cost > 0:
-                parts.append(f"{DIM}billing ~{fmt_cost(billing_cost)}{RESET}")
+                parts.append(f"{DIM}~{fmt_cost(billing_cost)}/mo{RESET}")
 
     print(sep.join(parts))
 

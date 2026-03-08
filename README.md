@@ -5,7 +5,7 @@ A statusline for [Claude Code](https://claude.ai/code) showing token usage, cach
 ## Features
 
 - **Current directory + model** — At-a-glance context
-- **Git branch** — Optional, with `--git`
+- **Git branch + worktree** — Optional, with `--git` (shows `[worktree-name]` when in a linked worktree)
 - **Token progress bar** — Context usage with color-coded warnings (blue → yellow → red)
 - **Cache status** — Cached vs freshly written tokens from the last API call
 - **Estimated API cost** — What this session would cost on the Anthropic API (per-model pricing with cache discounts)
@@ -70,7 +70,7 @@ Example with all options:
 | `ball` | `────●─────` | `●` |
 | `capped` | `━━━╸┄┄┄┄┄┄` | `━` |
 | `filled` | `■■■■□□□□□□` | `■` |
-| `text` | `~19.0k 40%` | `·` |
+| `text` | `~19.0k 40%` | `●` |
 
 ### Alternative: install globally
 
@@ -106,21 +106,18 @@ Estimated API cost shows what the current session's token usage would cost on th
     "filled": ["■", "□", null, null]
   },
   "separators": {
-    "text": "·", "bar": "█", "ball": "●",
+    "text": "●", "bar": "█", "ball": "●",
     "capped": "━", "dots": "●", "filled": "■"
   },
-  "pricing": {
-    "opus": [15.0, 75.0],
-    "sonnet": [3.0, 15.0],
-    "haiku": [0.80, 4.0]
-  },
   "cache_read_factor": 0.10,
-  "cache_write_factor": 1.25,
+  "cache_write_factor": 2.0,
   "billing_day": 1
 }
 ```
 
-All fields are optional — missing keys fall back to built-in defaults. Pricing is `[input_per_M, output_per_M]` in USD ([source](https://she-llac.com/claude-limits)). Bar style chars are `[filled, empty, cap, marker]` (use `null` for unused).
+All fields are optional — missing keys fall back to built-in defaults. Bar style chars are `[filled, empty, cap, marker]` (use `null` for unused).
+
+Model pricing is fetched automatically from [LiteLLM](https://github.com/BerriAI/litellm) and cached in `~/.claude/.claude-counter-pricing-cache.json` (refreshed every 24 hours). Cache read/write factors can be overridden in config — `cache_write_factor` defaults to 2.0 (1-hour caching used by Claude Code).
 
 Rate limit utilization (session 5h and weekly 7d) is fetched from the Anthropic OAuth API using Claude Code's stored credentials (macOS Keychain or `~/.claude/.credentials.json` on Linux). Results are cached for 15 seconds to avoid excessive API calls.
 
