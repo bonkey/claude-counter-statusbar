@@ -244,10 +244,10 @@ def main():
     pct_str = fmt_pct(used_pct)
 
     if args.style == "text":
-        parts.append(f"🔤 ~{fmt_tokens(total_tokens)} {pct_str}")
+        parts.append(f"~{fmt_tokens(total_tokens)} {pct_str}")
     else:
         bar = progress_bar(used_pct, args.style)
-        parts.append(f"🔤 {bar} {pct_str}")
+        parts.append(f"{bar} {pct_str}")
 
     # ── Cache status ──────────────────────────────────────────────
     current = ctx.get("current_usage") or {}
@@ -270,11 +270,11 @@ def main():
 
     if daily_total > 0:
         daily_pct = min(100.0, (daily_total / args.daily_budget) * 100) if args.daily_budget > 0 else 0
-        parts.append(cost_segment("dy", daily_pct, daily_total, args.style))
+        parts.append(cost_segment("1d", daily_pct, daily_total, args.style))
 
     if weekly_total > 0:
         weekly_pct = min(100.0, (weekly_total / args.weekly_budget) * 100) if args.weekly_budget > 0 else 0
-        parts.append(cost_segment("wk", weekly_pct, weekly_total, args.style))
+        parts.append(cost_segment("7d", weekly_pct, weekly_total, args.style))
 
     # ── Lines changed ─────────────────────────────────────────────
     lines_added = cost_data.get("total_lines_added") or 0
