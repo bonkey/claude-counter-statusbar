@@ -214,32 +214,21 @@ def usage_segment(label, pct, resets_at, style_name, cost=None):
     reset_part = f" {DIM}{reset_s}{RESET}" if reset_s else ""
     cost_part = f" {DIM}~{fmt_cost(cost)}{RESET}" if cost and cost > 0 else ""
     if style_name == "text":
-        return f"{label} {pct_s}{cost_part}{reset_part}"
+        return f"{label} {pct_s}{reset_part}{cost_part}"
     bar = progress_bar(pct, style_name)
-    return f"{label} {bar} {pct_s}{cost_part}{reset_part}"
+    return f"{label} {bar} {pct_s}{reset_part}{cost_part}"
 
 
-# ── Cost accumulation ─────────────────────────────────────────────────
-def update_accumulated_costs(session_id, session_cost):
-    """Track per-session estimated API costs, return daily + weekly totals."""
+# ── Cost accumulation (aligned with rate limit windows) ───────────────
+def _load_cost_state():
     try:
         with open(COST_STATE_FILE) as f:
-            state = json.load(f)
+            return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
-        state = {}
+        return {}
 
-    daily = state.get("daily", {})
-    today = time.strftime("%Y-%m-%d")
 
-    today_sessions = daily.get(today, {})
-    today_sessions[session_id] = session_cost
-    daily[today] = today_sessions
-
-    # Prune entries older than 7 days
-    cutoff = time.strftime("%Y-%m-%d", time.localtime(time.time() - 7 * 86400))
-    daily = {d: s for d, s in daily.items() if d >= cutoff}
-
-    state["daily"] = daily
+def _save_cost_state(state):
     try:
         os.makedirs(os.path.dirname(COST_STATE_FILE), exist_ok=True)
         with open(COST_STATE_FILE, "w") as f:
@@ -247,12 +236,39 @@ def update_accumulated_costs(session_id, session_cost):
     except OSError:
         pass
 
-    daily_total = sum(daily.get(today, {}).values())
-    weekly_total = sum(
-        cost for day_sessions in daily.values()
-        for cost in day_sessions.values()
-    )
-    return daily_total, weekly_total
+
+def update_accumulated_costs(session_id, session_cost, five_hour_resets_at, seven_day_resets_at):
+    """Track per-session costs, reset when rate limit windows roll over.
+
+    Returns (window_5h_cost, window_7d_cost).
+    """
+    state = _load_cost_state()
+
+    # Check if the 5h window rolled over → clear 5h costs
+    prev_5h_reset = state.get("five_hour_resets_at", "")
+    if five_hour_resets_at and five_hour_resets_at != prev_5h_reset:
+        state["five_hour_sessions"] = {}
+        state["five_hour_resets_at"] = five_hour_resets_at
+
+    # Check if the 7d window rolled over → clear 7d costs
+    prev_7d_reset = state.get("seven_day_resets_at", "")
+    if seven_day_resets_at and seven_day_resets_at != prev_7d_reset:
+        state["seven_day_sessions"] = {}
+        state["seven_day_resets_at"] = seven_day_resets_at
+
+    # Update this session's cost in both windows
+    five_hour_sessions = state.get("five_hour_sessions", {})
+    seven_day_sessions = state.get("seven_day_sessions", {})
+
+    five_hour_sessions[session_id] = session_cost
+    seven_day_sessions[session_id] = session_cost
+
+    state["five_hour_sessions"] = five_hour_sessions
+    state["seven_day_sessions"] = seven_day_sessions
+
+    _save_cost_state(state)
+
+    return sum(five_hour_sessions.values()), sum(seven_day_sessions.values())
 
 
 # ── OAuth token retrieval ─────────────────────────────────────────────
@@ -450,14 +466,7 @@ def main():
         bar = progress_bar(used_pct, args.style)
         parts.append(f"{bar} {pct_str}{cache_str}{cost_str}")
 
-    # ── Accumulate costs across sessions ───────────────────────────
-    daily_cost = 0.0
-    weekly_cost = 0.0
-    session_id = data.get("session_id") or ""
-    if not args.no_cost and session_id and session_api_cost > 0:
-        daily_cost, weekly_cost = update_accumulated_costs(session_id, session_api_cost)
-
-    # ── Rate limit usage (session + weekly) ────────────────────────
+    # ── Rate limit usage (session + weekly) + accumulated costs ─────
     if not args.no_usage:
         usage = fetch_usage()
         if usage:
@@ -466,18 +475,28 @@ def main():
 
             session_pct = five_hour.get("utilization", 0)
             session_reset = five_hour.get("resets_at", "")
+            weekly_pct = seven_day.get("utilization", 0)
+            weekly_reset = seven_day.get("resets_at", "")
+
+            # Accumulate costs aligned with rate limit windows
+            window_5h_cost = 0.0
+            window_7d_cost = 0.0
+            session_id = data.get("session_id") or ""
+            if not args.no_cost and session_id and session_api_cost > 0:
+                window_5h_cost, window_7d_cost = update_accumulated_costs(
+                    session_id, session_api_cost, session_reset, weekly_reset,
+                )
+
             if session_pct is not None:
                 parts.append(usage_segment(
                     "5h", session_pct, session_reset, args.style,
-                    cost=daily_cost if not args.no_cost else None,
+                    cost=window_5h_cost if not args.no_cost else None,
                 ))
 
-            weekly_pct = seven_day.get("utilization", 0)
-            weekly_reset = seven_day.get("resets_at", "")
             if weekly_pct is not None:
                 parts.append(usage_segment(
                     "7d", weekly_pct, weekly_reset, args.style,
-                    cost=weekly_cost if not args.no_cost else None,
+                    cost=window_7d_cost if not args.no_cost else None,
                 ))
 
     print(sep.join(parts))
