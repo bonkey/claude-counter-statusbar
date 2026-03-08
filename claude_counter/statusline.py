@@ -396,19 +396,20 @@ def main():
     elif cache_creation > 0:
         cache_str = f" {DIM}📝{fmt_tokens(cache_creation)}{RESET}"
 
-    if args.style == "text":
-        parts.append(f"~{fmt_tokens(total_tokens)} {pct_str}{cache_str}")
-    else:
-        bar = progress_bar(used_pct, args.style)
-        parts.append(f"{bar} {pct_str}{cache_str}")
-
-    # ── Estimated API cost ─────────────────────────────────────────
+    # Estimated API cost (grouped with token bar, no separator)
+    cost_str = ""
     if not args.no_cost:
         api_cost = estimate_api_cost(
             model_name, total_input, total_output, cache_read, cache_creation,
         )
         if api_cost > 0:
-            parts.append(f"{DIM}~{fmt_cost(api_cost)}{RESET}")
+            cost_str = f" {DIM}~{fmt_cost(api_cost)}{RESET}"
+
+    if args.style == "text":
+        parts.append(f"~{fmt_tokens(total_tokens)} {pct_str}{cache_str}{cost_str}")
+    else:
+        bar = progress_bar(used_pct, args.style)
+        parts.append(f"{bar} {pct_str}{cache_str}{cost_str}")
 
     # ── Rate limit usage (session + weekly) ────────────────────────
     if not args.no_usage:
