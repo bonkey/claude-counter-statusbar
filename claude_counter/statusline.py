@@ -2,21 +2,25 @@
 """Claude Counter — Claude Code statusline.
 
 Reads JSON from stdin (provided by Claude Code) and outputs a formatted
-status line showing token usage, cache status, and session cost.
+status line with token usage, cache status, session/weekly cost, model, and cwd.
 
-Features (mapped from the browser extension):
-  - Token count with progress bar (context usage against window size)
-  - Cache status (read vs creation tokens from last API call)
-  - Session cost (replaces browser's session/weekly usage bars)
+Usage:
+  claude-counter [--style=STYLE]
+
+Styles (from claude-powerline): text, bar, ball, capped, dots (default), filled
 """
 
+import argparse
 import json
+import os
 import sys
+import time
 
 # ── Config ────────────────────────────────────────────────────────────
-BAR_WIDTH = 20
+BAR_WIDTH = 10
 WARN_PCT = 80
 CRIT_PCT = 95
+STATE_FILE = os.path.expanduser("~/.claude/.claude-counter-state.json")
 
 # ANSI escape helpers
 RESET = "\033[0m"
@@ -27,11 +31,22 @@ RED = "\033[31m"
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
 GRAY = "\033[90m"
+CYAN = "\033[36m"
+MAGENTA = "\033[35m"
+
+# ── Bar styles (credit: Owloops/claude-powerline) ─────────────────────
+# Each style defines (filled_char, empty_char, cap_char, marker_char)
+BAR_STYLES = {
+    "bar":    ("█", "░", None, None),
+    "ball":   ("─", "─", None, "●"),
+    "capped": ("━", "┄", "╸", None),
+    "dots":   ("●", "○", None, None),
+    "filled": ("■", "□", None, None),
+}
 
 
 # ── Formatting ────────────────────────────────────────────────────────
 def fmt_tokens(n):
-    """Format token count for compact display."""
     if n >= 1_000_000:
         return f"{n / 1_000_000:.1f}M"
     if n >= 1_000:
@@ -40,7 +55,6 @@ def fmt_tokens(n):
 
 
 def fmt_cost(usd):
-    """Format cost, hiding sub-cent amounts."""
     if usd >= 1.0:
         return f"${usd:.2f}"
     if usd >= 0.01:
@@ -50,12 +64,18 @@ def fmt_cost(usd):
     return "$0.00"
 
 
-def progress_bar(pct, width=BAR_WIDTH):
-    """Render a Unicode progress bar with ANSI colors."""
+def fmt_dir(cwd):
+    home = os.environ.get("HOME", "")
+    if home and cwd.startswith(home):
+        cwd = "~" + cwd[len(home):]
+    return os.path.basename(cwd) or cwd
+
+
+def progress_bar(pct, style_name, width=BAR_WIDTH):
     pct = max(0.0, min(100.0, pct))
-    filled = int(pct / 100 * width)
-    filled = min(filled, width)
-    empty = width - filled
+    filled_count = int(pct / 100 * width)
+    filled_count = min(filled_count, width)
+    empty_count = width - filled_count
 
     if pct >= CRIT_PCT:
         color = RED + BOLD
@@ -64,12 +84,84 @@ def progress_bar(pct, width=BAR_WIDTH):
     else:
         color = BLUE
 
-    bar = f"{color}{'█' * filled}{GRAY}{'░' * empty}{RESET}"
-    return bar
+    filled_ch, empty_ch, cap_ch, marker_ch = BAR_STYLES[style_name]
+
+    if marker_ch:
+        # Ball style: line with a marker dot at the position
+        pos = min(filled_count, width - 1)
+        bar = filled_ch * pos + marker_ch + empty_ch * (width - pos - 1)
+        return f"{color}{bar}{RESET}"
+
+    if cap_ch:
+        # Capped style: filled with a cap at the end
+        if filled_count == 0:
+            bar = cap_ch + empty_ch * (width - 1)
+        elif filled_count >= width:
+            bar = filled_ch * width
+        else:
+            bar = filled_ch * (filled_count - 1) + cap_ch + empty_ch * empty_count
+        return f"{color}{bar}{RESET}"
+
+    # Standard: filled + empty
+    return f"{color}{filled_ch * filled_count}{GRAY}{empty_ch * empty_count}{RESET}"
+
+
+# ── Weekly cost tracking ──────────────────────────────────────────────
+def load_state():
+    try:
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_state(state):
+    try:
+        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except OSError:
+        pass
+
+
+def update_weekly(session_id, session_cost):
+    """Track per-session costs by date for weekly aggregation."""
+    state = load_state()
+    daily = state.get("daily", {})
+
+    today = time.strftime("%Y-%m-%d")
+
+    # Record this session's cost for today
+    today_sessions = daily.get(today, {})
+    today_sessions[session_id] = session_cost
+    daily[today] = today_sessions
+
+    # Prune entries older than 7 days
+    cutoff = time.strftime("%Y-%m-%d", time.localtime(time.time() - 7 * 86400))
+    daily = {d: s for d, s in daily.items() if d >= cutoff}
+
+    state["daily"] = daily
+    save_state(state)
+
+    # Sum all sessions across the week
+    weekly_total = sum(
+        cost for day_sessions in daily.values()
+        for cost in day_sessions.values()
+    )
+    return weekly_total
 
 
 # ── Main ──────────────────────────────────────────────────────────────
 def main():
+    parser = argparse.ArgumentParser(description="Claude Counter statusline")
+    parser.add_argument(
+        "--style",
+        choices=["text", "bar", "ball", "capped", "dots", "filled"],
+        default="dots",
+        help="Progress bar style (default: dots)",
+    )
+    args = parser.parse_args()
+
     try:
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
@@ -78,7 +170,19 @@ def main():
 
     ctx = data.get("context_window") or {}
     cost_data = data.get("cost") or {}
-    model = data.get("model") or {}
+    model_data = data.get("model") or {}
+
+    parts = []
+
+    # ── Current directory ─────────────────────────────────────────
+    cwd = (data.get("workspace") or {}).get("current_dir") or data.get("cwd") or ""
+    if cwd:
+        parts.append(f"{CYAN}{fmt_dir(cwd)}{RESET}")
+
+    # ── Model ─────────────────────────────────────────────────────
+    model_name = model_data.get("display_name") or ""
+    if model_name:
+        parts.append(f"{MAGENTA}{model_name}{RESET}")
 
     # ── Token count + progress bar ────────────────────────────────
     total_input = ctx.get("total_input_tokens") or 0
@@ -86,15 +190,12 @@ def main():
     context_size = ctx.get("context_window_size") or 200_000
     used_pct = ctx.get("used_percentage")
 
-    # Fallback: compute percentage if not provided
     if used_pct is None and context_size > 0:
         used_pct = (total_input / context_size) * 100
     used_pct = used_pct or 0
 
     total_tokens = total_input + total_output
-    bar = progress_bar(used_pct)
 
-    # Color the percentage based on severity
     if used_pct >= CRIT_PCT:
         pct_str = f"{RED}{BOLD}{used_pct:.0f}%{RESET}"
     elif used_pct >= WARN_PCT:
@@ -102,22 +203,38 @@ def main():
     else:
         pct_str = f"{used_pct:.0f}%"
 
-    parts = [f"~{fmt_tokens(total_tokens)} {bar} {pct_str}"]
+    if args.style == "text":
+        parts.append(f"~{fmt_tokens(total_tokens)} {pct_str}")
+    else:
+        bar = progress_bar(used_pct, args.style)
+        parts.append(f"{bar} {pct_str}")
 
-    # ── Cache status (maps to browser's cache timer) ──────────────
+    # ── Cache status ──────────────────────────────────────────────
     current = ctx.get("current_usage") or {}
     cache_read = current.get("cache_read_input_tokens") or 0
     cache_creation = current.get("cache_creation_input_tokens") or 0
 
     if cache_read > 0:
-        parts.append(f"{GREEN}⚡{fmt_tokens(cache_read)} cached{RESET}")
+        parts.append(f"{GREEN}⚡{fmt_tokens(cache_read)}{RESET}")
     elif cache_creation > 0:
-        parts.append(f"{DIM}📝{fmt_tokens(cache_creation)} written{RESET}")
+        parts.append(f"{DIM}📝{fmt_tokens(cache_creation)}{RESET}")
 
-    # ── Session cost (maps to browser's session/weekly bars) ──────
-    total_cost = cost_data.get("total_cost_usd") or 0
-    if total_cost > 0:
-        parts.append(fmt_cost(total_cost))
+    # ── Session cost ──────────────────────────────────────────────
+    session_cost = cost_data.get("total_cost_usd") or 0
+    if session_cost > 0:
+        parts.append(fmt_cost(session_cost))
+
+    # ── Weekly cost ───────────────────────────────────────────────
+    session_id = data.get("session_id") or ""
+    if session_id and session_cost > 0:
+        weekly_total = update_weekly(session_id, session_cost)
+        if weekly_total > session_cost:
+            parts.append(f"{DIM}wk {fmt_cost(weekly_total)}{RESET}")
+    elif session_id:
+        # Still update state even if cost is 0
+        weekly_total = update_weekly(session_id, 0)
+        if weekly_total > 0:
+            parts.append(f"{DIM}wk {fmt_cost(weekly_total)}{RESET}")
 
     # ── Lines changed ─────────────────────────────────────────────
     lines_added = cost_data.get("total_lines_added") or 0

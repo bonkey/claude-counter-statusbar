@@ -4,10 +4,13 @@ A statusline for [Claude Code](https://claude.ai/code) showing token usage, cach
 
 ## Features
 
-- **Token count + progress bar** — Context usage against window size with color-coded warnings
-- **Cache status** — Shows cached vs freshly written tokens from the last API call
+- **Current directory + model** — At-a-glance context
+- **Token progress bar** — Context usage with color-coded warnings (blue → yellow → red)
+- **Cache status** — Cached vs freshly written tokens from the last API call
 - **Session cost** — Running total for the current session
-- **Lines changed** — Net additions/removals across the session
+- **Weekly cost** — Aggregated across all sessions over 7 days
+- **Lines changed** — Net additions/removals
+- **Bar styles** — `dots` (default), `text`, `bar`, `ball`, `capped`, `filled`
 
 ## Installation
 
@@ -33,7 +36,27 @@ Or with `pipx`:
 }
 ```
 
-Restart Claude Code to activate.
+### Choosing a style
+
+Append `--style=STYLE` to the command:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "uvx --from git+https://github.com/bonkey/claude-counter-statusbar claude-counter --style=bar"
+  }
+}
+```
+
+| Style | Example |
+|-------|---------|
+| `dots` (default) | `●●●●○○○○○○ 40%` |
+| `bar` | `████░░░░░░ 40%` |
+| `ball` | `────●───── 40%` |
+| `capped` | `━━━╸┄┄┄┄┄┄ 40%` |
+| `filled` | `■■■■□□□□□□ 40%` |
+| `text` | `~19.0k 40%` |
 
 ### Alternative: install globally
 
@@ -41,36 +64,18 @@ Restart Claude Code to activate.
 pip install git+https://github.com/bonkey/claude-counter-statusbar
 ```
 
-Then use:
-
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "claude-counter"
-  }
-}
-```
+Then use `"command": "claude-counter"` (or `"command": "claude-counter --style=bar"`).
 
 ## How it works
 
-Claude Code sends a JSON object to the statusline script via stdin after each assistant message. The script reads `context_window`, `cost`, and `current_usage` fields and renders a compact status line with ANSI colors.
+Claude Code sends JSON via stdin after each assistant message. The script reads `context_window`, `cost`, `model`, and `workspace` fields and renders a compact status line with ANSI colors.
 
-**Display at different usage levels:**
-
-| Usage | Appearance |
-|-------|-----------|
-| Normal (<80%) | Blue progress bar |
-| Warning (80-95%) | Yellow bar + yellow percentage |
-| Critical (>95%) | Red bold bar + red percentage |
-
-**Cache indicators:**
-- `⚡12.0k cached` — tokens served from cache (cheaper)
-- `📝5.0k written` — tokens written to cache (first time)
+Weekly cost is tracked in `~/.claude/.claude-counter-state.json`, aggregating per-session costs by date with a 7-day rolling window.
 
 ## Credits
 
 - Original browser extension by [shellac](https://github.com/she-llac)
+- Bar styles from [claude-powerline](https://github.com/Owloops/claude-powerline) by Owloops
 - Rewritten as Claude Code statusline by [Claude](https://claude.ai) (Anthropic)
 - Inspired by [Claude Usage Tracker](https://github.com/lugia19/Claude-Usage-Extension) by lugia19
 
