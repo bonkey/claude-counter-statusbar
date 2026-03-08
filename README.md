@@ -9,8 +9,8 @@ A statusline for [Claude Code](https://claude.ai/code) showing token usage, cach
 - **Token progress bar** — Context usage with color-coded warnings (blue → yellow → red)
 - **Cache status** — Cached vs freshly written tokens from the last API call
 - **Estimated API cost** — What this session would cost on the Anthropic API (per-model pricing with cache discounts)
-- **Session usage bar (5h)** — Rolling 5-hour rate limit utilization with reset countdown
-- **Weekly usage bar (7d)** — Rolling 7-day rate limit utilization with reset countdown
+- **Session usage bar (5h)** — Rolling 5-hour rate limit utilization with reset countdown + accumulated daily API cost
+- **Weekly usage bar (7d)** — Rolling 7-day rate limit utilization with reset countdown + accumulated weekly API cost
 - **6 bar styles** — `dots` (default), `text`, `bar`, `ball`, `capped`, `filled`
 - **Style-matched separators** — Separator character matches the bar style (overridable)
 
@@ -82,7 +82,7 @@ Then use `"command": "claude-counter"` (with any flags).
 
 Claude Code sends JSON via stdin after each assistant message. The script reads `context_window`, `model`, and `workspace` fields and renders a compact status line with ANSI colors.
 
-Estimated API cost shows what the current session's token usage would cost on the Anthropic API, with per-model pricing (Opus/Sonnet/Haiku) and cache discounts (reads at 10%, writes at 125% of input price). Pricing source: [she-llac.com/claude-limits](https://she-llac.com/claude-limits).
+Estimated API cost shows what the current session's token usage would cost on the Anthropic API, with per-model pricing (Opus/Sonnet/Haiku) and cache discounts (reads at 10%, writes at 125% of input price). Costs are accumulated across sessions in `~/.claude/.claude-counter-cost-state.json` — daily totals shown on the 5h bar, weekly totals on the 7d bar (auto-prunes after 7 days). Pricing source: [she-llac.com/claude-limits](https://she-llac.com/claude-limits).
 
 Rate limit utilization (session 5h and weekly 7d) is fetched from the Anthropic OAuth API using Claude Code's stored credentials (macOS Keychain or `~/.claude/.credentials.json` on Linux). Results are cached for 15 seconds to avoid excessive API calls.
 

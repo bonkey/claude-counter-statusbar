@@ -41,6 +41,10 @@ Single Python package, no external dependencies. Installable directly from git v
 
 Session (5h) and weekly (7d) utilization is fetched from `https://api.anthropic.com/api/oauth/usage` using the OAuth token from Claude Code's credential store (macOS Keychain `Claude Code-credentials` or `~/.claude/.credentials.json` on Linux). Results are cached in `~/.claude/.claude-counter-usage-cache.json` for 15 seconds.
 
+## Cost estimation
+
+Estimated API cost is calculated per-model (Opus $15/$75, Sonnet $3/$15, Haiku $0.80/$4 per M tokens) with cache discounts (reads 10%, writes 125% of input price). Per-session costs are accumulated in `~/.claude/.claude-counter-cost-state.json` — daily totals on 5h bar, weekly totals on 7d bar. Source: https://she-llac.com/claude-limits
+
 ## Install pattern
 
 ```json
