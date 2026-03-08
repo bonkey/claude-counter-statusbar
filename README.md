@@ -8,6 +8,7 @@ A statusline for [Claude Code](https://claude.ai/code) showing token usage, cach
 - **Git branch** — Optional, with `--git`
 - **Token progress bar** — Context usage with color-coded warnings (blue → yellow → red)
 - **Cache status** — Cached vs freshly written tokens from the last API call
+- **Estimated API cost** — What this session would cost on the Anthropic API (per-model pricing with cache discounts)
 - **Session usage bar (5h)** — Rolling 5-hour rate limit utilization with reset countdown
 - **Weekly usage bar (7d)** — Rolling 7-day rate limit utilization with reset countdown
 - **6 bar styles** — `dots` (default), `text`, `bar`, `ball`, `capped`, `filled`
@@ -45,6 +46,7 @@ Or with `pipx`:
 | `--separator` | *(matches style)* | Separator character between segments |
 | `--git` | off | Show current git branch |
 | `--no-usage` | off | Disable rate limit usage bars (skip API call) |
+| `--no-cost` | off | Disable estimated API cost display |
 
 Example with all options:
 
@@ -79,6 +81,8 @@ Then use `"command": "claude-counter"` (with any flags).
 ## How it works
 
 Claude Code sends JSON via stdin after each assistant message. The script reads `context_window`, `model`, and `workspace` fields and renders a compact status line with ANSI colors.
+
+Estimated API cost shows what the current session's token usage would cost on the Anthropic API, with per-model pricing (Opus/Sonnet/Haiku) and cache discounts (reads at 10%, writes at 125% of input price). Pricing source: [she-llac.com/claude-limits](https://she-llac.com/claude-limits).
 
 Rate limit utilization (session 5h and weekly 7d) is fetched from the Anthropic OAuth API using Claude Code's stored credentials (macOS Keychain or `~/.claude/.credentials.json` on Linux). Results are cached for 15 seconds to avoid excessive API calls.
 

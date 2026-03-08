@@ -60,6 +60,18 @@ STYLE_SEPARATORS = {
     "filled": "■",
 }
 
+# ── API pricing per million tokens (USD) ──────────────────────────────
+# Cache reads = 10% of input price, cache writes (5min) = 125% of input price
+# Source: https://she-llac.com/claude-limits
+API_PRICING = {
+    # model_pattern: (input_per_M, output_per_M)
+    "opus":   (15.0, 75.0),
+    "sonnet": (3.0, 15.0),
+    "haiku":  (0.80, 4.0),
+}
+CACHE_READ_FACTOR = 0.10    # 10% of input price
+CACHE_WRITE_FACTOR = 1.25   # 125% of input price
+
 USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage"
 USAGE_API_HEADERS = {
     "anthropic-beta": "oauth-2025-04-20",
@@ -74,6 +86,16 @@ def fmt_tokens(n):
     if n >= 1_000:
         return f"{n / 1_000:.1f}k"
     return str(n)
+
+
+def fmt_cost(usd):
+    if usd >= 1.0:
+        return f"${usd:.2f}"
+    if usd >= 0.01:
+        return f"${usd:.2f}"
+    if usd > 0:
+        return f"${usd:.3f}"
+    return "$0.00"
 
 
 def fmt_pct(pct):
@@ -158,6 +180,31 @@ def progress_bar(pct, style_name, width=BAR_WIDTH):
         return f"{color}{bar}{RESET}"
 
     return f"{color}{filled_ch * filled_count}{GRAY}{empty_ch * empty_count}{RESET}"
+
+
+def estimate_api_cost(model_name, total_input, total_output, cache_read, cache_creation):
+    """Estimate what this session would cost on the Anthropic API."""
+    model_key = None
+    name_lower = (model_name or "").lower()
+    for key in API_PRICING:
+        if key in name_lower:
+            model_key = key
+            break
+    if not model_key:
+        model_key = "sonnet"  # fallback
+
+    input_per_m, output_per_m = API_PRICING[model_key]
+
+    # Non-cached input = total_input - cache_read - cache_creation
+    plain_input = max(0, total_input - cache_read - cache_creation)
+
+    cost = (
+        (plain_input / 1_000_000) * input_per_m
+        + (cache_read / 1_000_000) * input_per_m * CACHE_READ_FACTOR
+        + (cache_creation / 1_000_000) * input_per_m * CACHE_WRITE_FACTOR
+        + (total_output / 1_000_000) * output_per_m
+    )
+    return cost
 
 
 def usage_segment(label, pct, resets_at, style_name):
@@ -289,6 +336,10 @@ def main():
         "--no-usage", action="store_true",
         help="Disable rate limit usage bars (skip API call)",
     )
+    parser.add_argument(
+        "--no-cost", action="store_true",
+        help="Disable estimated API cost display",
+    )
     args = parser.parse_args()
 
     sep_char = args.separator or STYLE_SEPARATORS.get(args.style, "·")
@@ -350,6 +401,14 @@ def main():
     else:
         bar = progress_bar(used_pct, args.style)
         parts.append(f"{bar} {pct_str}{cache_str}")
+
+    # ── Estimated API cost ─────────────────────────────────────────
+    if not args.no_cost:
+        api_cost = estimate_api_cost(
+            model_name, total_input, total_output, cache_read, cache_creation,
+        )
+        if api_cost > 0:
+            parts.append(f"{DIM}~{fmt_cost(api_cost)}{RESET}")
 
     # ── Rate limit usage (session + weekly) ────────────────────────
     if not args.no_usage:

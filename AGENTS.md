@@ -35,6 +35,7 @@ Single Python package, no external dependencies. Installable directly from git v
 | `--separator` | (matches style) | Separator character between segments |
 | `--git` | off | Show current git branch |
 | `--no-usage` | off | Disable rate limit usage bars (skip API call) |
+| `--no-cost` | off | Disable estimated API cost display |
 
 ## Rate limit usage
 
