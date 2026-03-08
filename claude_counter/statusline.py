@@ -5,7 +5,7 @@ Reads JSON from stdin (provided by Claude Code) and outputs a formatted
 status line with token usage, cache status, session/weekly cost, model, and cwd.
 
 Usage:
-  claude-counter [--style=STYLE]
+  claude-counter [--style=STYLE] [--weekly-budget=USD]
 
 Styles (from claude-powerline): text, bar, ball, capped, dots (default), filled
 """
@@ -160,6 +160,12 @@ def main():
         default="dots",
         help="Progress bar style (default: dots)",
     )
+    parser.add_argument(
+        "--weekly-budget",
+        type=float,
+        default=50.0,
+        help="Weekly cost budget in USD for the progress bar (default: $50)",
+    )
     args = parser.parse_args()
 
     try:
@@ -226,15 +232,22 @@ def main():
 
     # ── Weekly cost ───────────────────────────────────────────────
     session_id = data.get("session_id") or ""
-    if session_id and session_cost > 0:
+    weekly_total = 0.0
+    if session_id:
         weekly_total = update_weekly(session_id, session_cost)
-        if weekly_total > session_cost:
-            parts.append(f"{DIM}wk {fmt_cost(weekly_total)}{RESET}")
-    elif session_id:
-        # Still update state even if cost is 0
-        weekly_total = update_weekly(session_id, 0)
-        if weekly_total > 0:
-            parts.append(f"{DIM}wk {fmt_cost(weekly_total)}{RESET}")
+    if weekly_total > 0:
+        weekly_pct = min(100.0, (weekly_total / args.weekly_budget) * 100) if args.weekly_budget > 0 else 0
+        if args.style == "text":
+            wk_label = fmt_cost(weekly_total)
+            if weekly_pct >= CRIT_PCT:
+                parts.append(f"wk {RED}{BOLD}{wk_label}{RESET}")
+            elif weekly_pct >= WARN_PCT:
+                parts.append(f"wk {YELLOW}{wk_label}{RESET}")
+            else:
+                parts.append(f"wk {wk_label}")
+        else:
+            wk_bar = progress_bar(weekly_pct, args.style)
+            parts.append(f"wk {wk_bar} {fmt_cost(weekly_total)}")
 
     # ── Lines changed ─────────────────────────────────────────────
     lines_added = cost_data.get("total_lines_added") or 0
