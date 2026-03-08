@@ -5,7 +5,7 @@ Reads JSON from stdin (provided by Claude Code) and outputs a formatted
 status line with token usage, cache status, rate limit utilization, model, and cwd.
 
 Usage:
-  claude-counter [--style=STYLE] [--git] [--no-usage]
+  claude-counter [--style=STYLE] [--no-git] [--no-usage]
 
 Styles (from claude-powerline): text, bar, ball, capped, dots (default), filled
 Separator auto-matches the bar style (override with --separator).
@@ -735,8 +735,8 @@ def main():
         help="Separator character (default: matches bar style)",
     )
     parser.add_argument(
-        "--git", action="store_true",
-        help="Show current git branch",
+        "--git", action=argparse.BooleanOptionalAction, default=True,
+        help="Show current git branch (default: on)",
     )
     parser.add_argument(
         "--no-usage", action="store_true",

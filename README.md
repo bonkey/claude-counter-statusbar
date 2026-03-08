@@ -5,7 +5,7 @@ A statusline for [Claude Code](https://claude.ai/code) showing token usage, cach
 ## Features
 
 - **Current directory + model** — At-a-glance context
-- **Git branch + worktree** — Optional, with `--git` (shows `[worktree-name]` when in a linked worktree)
+- **Git branch + worktree** — On by default (shows `[worktree-name]` when in a linked worktree; `--no-git` to disable)
 - **Token progress bar** — Context usage with color-coded warnings (blue → yellow → red)
 - **Cache status** — Cached vs freshly written tokens from the last API call
 - **Estimated API cost** — What this session would cost on the Anthropic API (per-model pricing with cache discounts)
@@ -45,7 +45,7 @@ Or with `pipx`:
 |------|---------|-------------|
 | `--style` | `dots` | Bar style: `text`, `bar`, `ball`, `capped`, `dots`, `filled` |
 | `--separator` | *(matches style)* | Separator character between segments |
-| `--git` | off | Show current git branch |
+| `--git` / `--no-git` | on | Show current git branch |
 | `--no-usage` | off | Disable rate limit usage bars (skip API call) |
 | `--no-cost` | off | Disable estimated API cost display |
 | `--sync` | off | Scan historical transcripts to backfill cost data, then exit |
@@ -56,7 +56,7 @@ Example with all options:
 {
   "statusLine": {
     "type": "command",
-    "command": "uvx --from git+https://github.com/bonkey/claude-counter-statusbar claude-counter --style=dots --git"
+    "command": "uvx --from git+https://github.com/bonkey/claude-counter-statusbar claude-counter --style=dots"
   }
 }
 ```
