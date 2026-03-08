@@ -36,6 +36,7 @@ Single Python package, no external dependencies. Installable directly from git v
 | `--git` | off | Show current git branch |
 | `--no-usage` | off | Disable rate limit usage bars (skip API call) |
 | `--no-cost` | off | Disable estimated API cost display |
+| `--sync` | off | Scan historical transcripts to backfill cost data, then exit |
 
 ## Rate limit usage
 
@@ -43,7 +44,17 @@ Session (5h) and weekly (7d) utilization is fetched from `https://api.anthropic.
 
 ## Cost estimation
 
-Estimated API cost is calculated per-model (Opus $15/$75, Sonnet $3/$15, Haiku $0.80/$4 per M tokens) with cache discounts (reads 10%, writes 125% of input price). Per-session costs are accumulated in `~/.claude/.claude-counter-cost-state.json` — daily totals on 5h bar, weekly totals on 7d bar. Source: https://she-llac.com/claude-limits
+Estimated API cost is calculated per-model with cache discounts. Default pricing (overridable via config file): Opus $15/$75, Sonnet $3/$15, Haiku $0.80/$4 per M tokens; cache reads 10%, writes 125% of input price. Per-session costs are accumulated in `~/.claude/.claude-counter-cost-state.json` — 5h totals, 7d totals, and billing period total (resets on `billing_day` from config, default 1st). Source: https://she-llac.com/claude-limits
+
+## Historical sync
+
+`claude-counter --sync` scans `~/.claude/projects/*/*.jsonl` transcript files to backfill cost data from past sessions. Only processes files modified within the current billing period. Run once to populate historical costs.
+
+## Config file
+
+`~/.claude/.claude-counter-config.json` — auto-created on first run with all defaults. Edit to customize pricing, bar styles, thresholds, etc.
+
+All fields are optional — missing keys fall back to built-in defaults.
 
 ## Install pattern
 

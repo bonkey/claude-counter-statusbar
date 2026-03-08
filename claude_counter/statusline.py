@@ -12,6 +12,8 @@ Separator auto-matches the bar style (override with --separator).
 """
 
 import argparse
+import calendar
+import glob as globmod
 import json
 import os
 import platform
@@ -20,13 +22,11 @@ import sys
 import time
 import urllib.request
 import urllib.error
+from datetime import datetime, timezone
 
-# ── Config ────────────────────────────────────────────────────────────
-BAR_WIDTH = 10
-WARN_PCT = 80
-CRIT_PCT = 95
+# ── Paths ─────────────────────────────────────────────────────────────
+CONFIG_FILE = os.path.expanduser("~/.claude/.claude-counter-config.json")
 USAGE_CACHE_FILE = os.path.expanduser("~/.claude/.claude-counter-usage-cache.json")
-USAGE_CACHE_TTL = 15  # seconds — avoid hammering the API on every statusline update
 COST_STATE_FILE = os.path.expanduser("~/.claude/.claude-counter-cost-state.json")
 
 # ANSI escape helpers
@@ -41,37 +41,103 @@ GRAY = "\033[90m"
 CYAN = "\033[36m"
 MAGENTA = "\033[35m"
 
-# ── Bar styles (credit: Owloops/claude-powerline) ─────────────────────
-# (filled_char, empty_char, cap_char, marker_char)
-BAR_STYLES = {
-    "bar":    ("█", "░", None, None),
-    "ball":   ("─", "─", None, "●"),
-    "capped": ("━", "┄", "╸", None),
-    "dots":   ("●", "○", None, None),
-    "filled": ("■", "□", None, None),
+# ── Defaults (written to config on first run) ─────────────────────────
+DEFAULT_CONFIG = {
+    "bar_width": 10,
+    "warn_pct": 80,
+    "crit_pct": 95,
+    "usage_cache_ttl": 15,
+    "bar_styles": {
+        "bar":    ["█", "░", None, None],
+        "ball":   ["─", "─", None, "●"],
+        "capped": ["━", "┄", "╸", None],
+        "dots":   ["●", "○", None, None],
+        "filled": ["■", "□", None, None],
+    },
+    "separators": {
+        "text":   "·",
+        "bar":    "█",
+        "ball":   "●",
+        "capped": "━",
+        "dots":   "●",
+        "filled": "■",
+    },
+    "pricing": {
+        "opus":   [5.0, 25.0],
+        "sonnet": [3.0, 15.0],
+        "haiku":  [1.0, 5.0],
+    },
+    "cache_read_factor": 0.10,
+    "cache_write_factor": 2.0,
+    "billing_day": 1,
 }
 
-# Default separator per style — uses the filled char, colored
-STYLE_SEPARATORS = {
-    "text":   "·",
-    "bar":    "█",
-    "ball":   "●",
-    "capped": "━",
-    "dots":   "●",
-    "filled": "■",
-}
 
-# ── API pricing per million tokens (USD) ──────────────────────────────
-# Cache reads = 10% of input price, cache writes (5min) = 125% of input price
-# Source: https://she-llac.com/claude-limits
-API_PRICING = {
-    # model_pattern: (input_per_M, output_per_M)
-    "opus":   (15.0, 75.0),
-    "sonnet": (3.0, 15.0),
-    "haiku":  (0.80, 4.0),
-}
-CACHE_READ_FACTOR = 0.10    # 10% of input price
-CACHE_WRITE_FACTOR = 1.25   # 125% of input price
+def _load_config():
+    """Load config from file, creating it with defaults if missing."""
+    config = None
+    try:
+        with open(CONFIG_FILE) as f:
+            config = json.load(f)
+    except FileNotFoundError:
+        # Auto-create with defaults
+        try:
+            os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+            with open(CONFIG_FILE, "w") as f:
+                json.dump(DEFAULT_CONFIG, f, indent=2, ensure_ascii=False)
+        except OSError:
+            pass
+    except (json.JSONDecodeError, OSError):
+        pass
+
+    if not config:
+        config = {}
+
+    def get(key):
+        return config.get(key, DEFAULT_CONFIG[key])
+
+    # Scalars
+    cfg = {
+        "bar_width": int(get("bar_width")),
+        "warn_pct": int(get("warn_pct")),
+        "crit_pct": int(get("crit_pct")),
+        "usage_cache_ttl": int(get("usage_cache_ttl")),
+        "cache_read_factor": float(get("cache_read_factor")),
+        "cache_write_factor": float(get("cache_write_factor")),
+        "billing_day": int(get("billing_day")),
+    }
+
+    # Bar styles: convert lists to tuples
+    raw_styles = get("bar_styles")
+    cfg["bar_styles"] = {}
+    for name, chars in raw_styles.items():
+        if isinstance(chars, list) and len(chars) == 4:
+            cfg["bar_styles"][name] = tuple(chars)
+
+    # Separators
+    cfg["separators"] = dict(get("separators"))
+
+    # Pricing: convert lists to tuples
+    raw_pricing = get("pricing")
+    cfg["pricing"] = {}
+    for model, prices in raw_pricing.items():
+        if isinstance(prices, list) and len(prices) == 2:
+            cfg["pricing"][model] = (float(prices[0]), float(prices[1]))
+
+    return cfg
+
+
+CFG = _load_config()
+BAR_WIDTH = CFG["bar_width"]
+WARN_PCT = CFG["warn_pct"]
+CRIT_PCT = CFG["crit_pct"]
+USAGE_CACHE_TTL = CFG["usage_cache_ttl"]
+BAR_STYLES = CFG["bar_styles"]
+STYLE_SEPARATORS = CFG["separators"]
+API_PRICING = CFG["pricing"]
+CACHE_READ_FACTOR = CFG["cache_read_factor"]
+CACHE_WRITE_FACTOR = CFG["cache_write_factor"]
+BILLING_DAY = CFG["billing_day"]
 
 USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage"
 USAGE_API_HEADERS = {
@@ -119,7 +185,6 @@ def fmt_reset(resets_at):
     try:
         # Parse ISO 8601 with timezone
         ts = resets_at.replace("+00:00", "Z").replace("Z", "+00:00")
-        from datetime import datetime, timezone
         dt = datetime.fromisoformat(ts)
         now = datetime.now(timezone.utc)
         delta = (dt - now).total_seconds()
@@ -219,6 +284,46 @@ def usage_segment(label, pct, resets_at, style_name, cost=None):
     return f"{label} {bar} {pct_s}{reset_part}{cost_part}"
 
 
+# ── Billing period helpers ────────────────────────────────────────────
+
+
+def _effective_billing_day(year, month, billing_day):
+    """Clamp billing_day to the last day of the given month.
+
+    e.g. billing_day=29 in February → 28 (or 29 in leap year).
+    """
+    last_day = calendar.monthrange(year, month)[1]
+    return min(billing_day, last_day)
+
+
+def _billing_period_start(dt_obj=None, billing_day=None):
+    """Return the start datetime of the current billing period."""
+    if dt_obj is None:
+        dt_obj = datetime.now(timezone.utc)
+    if billing_day is None:
+        billing_day = BILLING_DAY
+
+    effective = _effective_billing_day(dt_obj.year, dt_obj.month, billing_day)
+
+    if dt_obj.day >= effective:
+        # Current period started this month
+        return datetime(dt_obj.year, dt_obj.month, effective, tzinfo=timezone.utc)
+    else:
+        # Current period started last month
+        if dt_obj.month == 1:
+            prev_year, prev_month = dt_obj.year - 1, 12
+        else:
+            prev_year, prev_month = dt_obj.year, dt_obj.month - 1
+        prev_effective = _effective_billing_day(prev_year, prev_month, billing_day)
+        return datetime(prev_year, prev_month, prev_effective, tzinfo=timezone.utc)
+
+
+def _billing_period_key(dt_obj=None, billing_day=None):
+    """Return a string key like '2026-03' for the current billing period."""
+    start = _billing_period_start(dt_obj, billing_day)
+    return f"{start.year}-{start.month:02d}"
+
+
 # ── Cost accumulation (aligned with rate limit windows) ───────────────
 def _load_cost_state():
     try:
@@ -240,7 +345,7 @@ def _save_cost_state(state):
 def update_accumulated_costs(session_id, session_cost, five_hour_resets_at, seven_day_resets_at):
     """Track per-session costs, reset when rate limit windows roll over.
 
-    Returns (window_5h_cost, window_7d_cost).
+    Returns (window_5h_cost, window_7d_cost, billing_cost).
     """
     state = _load_cost_state()
 
@@ -256,19 +361,161 @@ def update_accumulated_costs(session_id, session_cost, five_hour_resets_at, seve
         state["seven_day_sessions"] = {}
         state["seven_day_resets_at"] = seven_day_resets_at
 
-    # Update this session's cost in both windows
+    # Check if billing period rolled over → clear billing costs
+    current_period = _billing_period_key()
+    if state.get("billing_period") != current_period:
+        state["billing_sessions"] = {}
+        state["billing_period"] = current_period
+
+    # Update this session's cost in all windows
     five_hour_sessions = state.get("five_hour_sessions", {})
     seven_day_sessions = state.get("seven_day_sessions", {})
+    billing_sessions = state.get("billing_sessions", {})
 
     five_hour_sessions[session_id] = session_cost
     seven_day_sessions[session_id] = session_cost
+    billing_sessions[session_id] = session_cost
 
     state["five_hour_sessions"] = five_hour_sessions
     state["seven_day_sessions"] = seven_day_sessions
+    state["billing_sessions"] = billing_sessions
 
     _save_cost_state(state)
 
-    return sum(five_hour_sessions.values()), sum(seven_day_sessions.values())
+    return (
+        sum(five_hour_sessions.values()),
+        sum(seven_day_sessions.values()),
+        sum(billing_sessions.values()),
+    )
+
+
+# ── Historical transcript sync ───────────────────────────────────────
+TRANSCRIPT_DIR = os.path.expanduser("~/.claude/projects")
+
+
+def _estimate_cost_from_usage(usage, model_str):
+    """Calculate cost from a single assistant message's usage dict."""
+    input_tokens = usage.get("input_tokens", 0)
+    output_tokens = usage.get("output_tokens", 0)
+    cache_read = usage.get("cache_read_input_tokens", 0)
+    cache_creation = usage.get("cache_creation_input_tokens", 0)
+    return estimate_api_cost(model_str, input_tokens, output_tokens, cache_read, cache_creation)
+
+
+def sync_historical_costs():
+    """Scan transcript files and backfill cost state.
+
+    Returns (sessions_found, total_cost).
+    """
+    billing_period = _billing_period_key()
+    now = datetime.now(timezone.utc)
+    period_start = _billing_period_start(now)
+
+    # Cutoffs for each window
+    five_hour_cutoff = now.timestamp() - 5 * 3600
+    seven_day_cutoff = now.timestamp() - 7 * 86400
+    billing_cutoff = period_start.timestamp()
+
+    # Find all transcript files — only check files modified since billing start
+    pattern = os.path.join(TRANSCRIPT_DIR, "*", "*.jsonl")
+    files = globmod.glob(pattern)
+
+    # Deduplicate by requestId — Claude Code logs streaming updates,
+    # so the same API call appears multiple times. Keep the last (largest) entry.
+    # Structure: {requestId: {usage, model, sessionId, timestamp}}
+    requests = {}
+    session_timestamps = {}  # session_id -> latest timestamp
+
+    for fpath in files:
+        try:
+            mtime = os.path.getmtime(fpath)
+            if mtime < billing_cutoff:
+                continue  # older than billing period
+        except OSError:
+            continue
+
+        try:
+            with open(fpath) as f:
+                for line in f:
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    if entry.get("type") != "assistant":
+                        continue
+                    msg = entry.get("message") or {}
+                    usage = msg.get("usage")
+                    if not usage:
+                        continue
+
+                    req_id = entry.get("requestId", "")
+                    if not req_id:
+                        continue
+
+                    # Keep entry with highest output_tokens (final streaming update)
+                    out = usage.get("output_tokens", 0)
+                    prev = requests.get(req_id)
+                    if prev is None or out > prev["usage"].get("output_tokens", 0):
+                        requests[req_id] = {
+                            "usage": usage,
+                            "model": msg.get("model", ""),
+                            "sessionId": entry.get("sessionId", ""),
+                            "timestamp": entry.get("timestamp", ""),
+                        }
+
+                    # Track latest timestamp per session
+                    ts_str = entry.get("timestamp", "")
+                    session_id = entry.get("sessionId", "")
+                    if ts_str and session_id:
+                        if session_id not in session_timestamps or ts_str > session_timestamps[session_id]:
+                            session_timestamps[session_id] = ts_str
+        except OSError:
+            continue
+
+    # Sum costs per session from deduplicated requests
+    session_costs = {}
+    for req in requests.values():
+        sid = req["sessionId"]
+        cost = _estimate_cost_from_usage(req["usage"], req["model"])
+        session_costs[sid] = session_costs.get(sid, 0.0) + cost
+
+    # Now bucket sessions into windows based on their latest timestamp
+    state = _load_cost_state()
+
+    five_hour_sessions = {}
+    seven_day_sessions = {}
+    billing_sessions = {}
+
+    for sid, cost in session_costs.items():
+        ts_str = session_timestamps.get(sid, "")
+        if not ts_str:
+            continue
+        try:
+            ts_parsed = ts_str.replace("+00:00", "Z").replace("Z", "+00:00")
+            ts_dt = datetime.fromisoformat(ts_parsed)
+            ts_epoch = ts_dt.timestamp()
+        except (ValueError, OSError):
+            continue
+
+        if ts_epoch >= billing_cutoff:
+            billing_sessions[sid] = cost
+        if ts_epoch >= seven_day_cutoff:
+            seven_day_sessions[sid] = cost
+        if ts_epoch >= five_hour_cutoff:
+            five_hour_sessions[sid] = cost
+
+    # Preserve resets_at from existing state (sync doesn't know these)
+    state["five_hour_sessions"] = five_hour_sessions
+    state["seven_day_sessions"] = seven_day_sessions
+    state["billing_sessions"] = billing_sessions
+    state["billing_period"] = billing_period
+    state["synced_at"] = time.time()
+
+    _save_cost_state(state)
+
+    total = sum(billing_sessions.values())
+    return len(session_costs), total
 
 
 # ── OAuth token retrieval ─────────────────────────────────────────────
@@ -394,7 +641,18 @@ def main():
         "--no-cost", action="store_true",
         help="Disable estimated API cost display",
     )
+    parser.add_argument(
+        "--sync", action="store_true",
+        help="Scan historical transcripts to backfill cost data, then exit",
+    )
     args = parser.parse_args()
+
+    # ── Sync mode (standalone) ────────────────────────────────────
+    if args.sync:
+        print(f"Scanning transcripts in {TRANSCRIPT_DIR}…", file=sys.stderr)
+        sessions, total = sync_historical_costs()
+        print(f"Done: {sessions} sessions, ~{fmt_cost(total)} billing period total", file=sys.stderr)
+        return
 
     sep_char = args.separator or STYLE_SEPARATORS.get(args.style, "·")
     sep = f" {GRAY}{sep_char}{RESET} "
@@ -445,10 +703,6 @@ def main():
     cache_creation = current.get("cache_creation_input_tokens") or 0
 
     cache_str = ""
-    if cache_read > 0:
-        cache_str = f" {GREEN}⚡{fmt_tokens(cache_read)}{RESET}"
-    elif cache_creation > 0:
-        cache_str = f" {DIM}📝{fmt_tokens(cache_creation)}{RESET}"
 
     # Estimated API cost (grouped with token bar, no separator)
     cost_str = ""
@@ -481,9 +735,10 @@ def main():
             # Accumulate costs aligned with rate limit windows
             window_5h_cost = 0.0
             window_7d_cost = 0.0
+            billing_cost = 0.0
             session_id = data.get("session_id") or ""
             if not args.no_cost and session_id and session_api_cost > 0:
-                window_5h_cost, window_7d_cost = update_accumulated_costs(
+                window_5h_cost, window_7d_cost, billing_cost = update_accumulated_costs(
                     session_id, session_api_cost, session_reset, weekly_reset,
                 )
 
@@ -498,6 +753,10 @@ def main():
                     "7d", weekly_pct, weekly_reset, args.style,
                     cost=window_7d_cost if not args.no_cost else None,
                 ))
+
+            # Billing period total
+            if not args.no_cost and billing_cost > 0:
+                parts.append(f"{DIM}billing ~{fmt_cost(billing_cost)}{RESET}")
 
     print(sep.join(parts))
 
