@@ -68,6 +68,12 @@ Claude Code sends a JSON object to the statusline script via stdin after each as
 - `⚡12.0k cached` — tokens served from cache (cheaper)
 - `📝5.0k written` — tokens written to cache (first time)
 
+## Credits
+
+- Original browser extension by [shellac](https://github.com/she-llac)
+- Rewritten as Claude Code statusline by [Claude](https://claude.ai) (Anthropic)
+- Inspired by [Claude Usage Tracker](https://github.com/lugia19/Claude-Usage-Extension) by lugia19
+
 ## License
 
 MIT
