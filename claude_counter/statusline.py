@@ -408,11 +408,16 @@ def update_accumulated_costs(session_id, session_cost, five_hour_resets_at, seve
         state["seven_day_sessions"] = {}
         state["seven_day_resets_at"] = seven_day_resets_at
 
-    # Check if billing period rolled over → clear billing costs
+    # Check if billing period rolled over → re-sync from transcripts
     current_period = _billing_period_key()
     if state.get("billing_period") != current_period:
-        state["billing_sessions"] = {}
-        state["billing_period"] = current_period
+        try:
+            sync_historical_costs()
+            state = _load_cost_state()
+        except Exception:
+            # Fallback: just clear if sync fails
+            state["billing_sessions"] = {}
+            state["billing_period"] = current_period
 
     # Update this session's cost in all windows
     five_hour_sessions = state.get("five_hour_sessions", {})
