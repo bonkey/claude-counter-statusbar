@@ -37,6 +37,7 @@ Single Python package, no external dependencies. Installable directly from git v
 | `--git` / `--no-git` | on | Show current git branch |
 | `--no-usage` | off | Disable rate limit usage bars (skip API call) |
 | `--no-cost` | off | Disable estimated API cost display |
+| `--no-total` | off | Disable billing period total cost display |
 | `--sync` | off | Scan historical transcripts to backfill cost data, then exit |
 
 ## Rate limit usage

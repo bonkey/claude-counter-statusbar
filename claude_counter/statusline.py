@@ -5,7 +5,7 @@ Reads JSON from stdin (provided by Claude Code) and outputs a formatted
 status line with token usage, cache status, rate limit utilization, model, and cwd.
 
 Usage:
-  claude-counter [--style=STYLE] [--no-git] [--no-usage]
+  claude-counter [--style=STYLE] [--no-git] [--no-usage] [--no-cost] [--no-total]
 
 Styles (from claude-powerline): text, bar, ball, capped, dots (default), filled
 Separator auto-matches the bar style (override with --separator).
@@ -758,6 +758,10 @@ def main():
         help="Disable estimated API cost display",
     )
     parser.add_argument(
+        "--no-total", action="store_true",
+        help="Disable billing period total cost display",
+    )
+    parser.add_argument(
         "--sync", action="store_true",
         help="Scan historical transcripts to backfill cost data, then exit",
     )
@@ -854,8 +858,14 @@ def main():
         bar = progress_bar(used_pct, args.style)
         parts.append(f"{bar} {pct_str}{cache_str}{cost_str}")
 
-    # ── Rate limit usage (session + weekly) + accumulated costs ─────
-    if not args.no_usage:
+    # ── Rate limit usage (session + weekly) ─────────────────────
+    # Fetch usage if we need either usage bars or cost accumulation
+    usage = None
+    window_5h_cost = 0.0
+    window_7d_cost = 0.0
+    billing_cost = 0.0
+
+    if not args.no_usage or not args.no_cost:
         usage = fetch_usage()
         if usage:
             five_hour = usage.get("five_hour") or {}
@@ -867,30 +877,37 @@ def main():
             weekly_reset = seven_day.get("resets_at", "")
 
             # Accumulate costs aligned with rate limit windows
-            window_5h_cost = 0.0
-            window_7d_cost = 0.0
-            billing_cost = 0.0
             session_id = data.get("session_id") or ""
             if not args.no_cost and session_id and session_api_cost > 0:
                 window_5h_cost, window_7d_cost, billing_cost = update_accumulated_costs(
                     session_id, session_api_cost, session_reset, weekly_reset,
                 )
 
-            if session_pct is not None:
-                parts.append(usage_segment(
-                    "5h", session_pct, session_reset, args.style,
-                    cost=window_5h_cost if not args.no_cost else None,
-                ))
+            # Usage bars (without costs — costs shown separately)
+            if not args.no_usage:
+                if session_pct is not None:
+                    parts.append(usage_segment(
+                        "5h", session_pct, session_reset, args.style,
+                    ))
 
-            if weekly_pct is not None:
-                parts.append(usage_segment(
-                    "7d", weekly_pct, weekly_reset, args.style,
-                    cost=window_7d_cost if not args.no_cost else None,
-                ))
+                if weekly_pct is not None:
+                    parts.append(usage_segment(
+                        "7d", weekly_pct, weekly_reset, args.style,
+                    ))
 
-            # Billing period total
-            if not args.no_cost and billing_cost > 0:
-                parts.append(f"{DIM}~{fmt_cost(billing_cost)}/mo{RESET}")
+    # ── Accumulated costs (5h + 7d + billing total) ───────────
+    if not args.no_cost:
+        cost_parts = []
+        if window_5h_cost > 0:
+            cost_parts.append(f"5h ~{fmt_cost(window_5h_cost)}")
+        if window_7d_cost > 0:
+            cost_parts.append(f"7d ~{fmt_cost(window_7d_cost)}")
+        if cost_parts:
+            parts.append(f"{DIM}{' '.join(cost_parts)}{RESET}")
+
+        # Billing period total
+        if not args.no_total and billing_cost > 0:
+            parts.append(f"{DIM}~{fmt_cost(billing_cost)}/mo{RESET}")
 
     print(sep.join(parts))
 
