@@ -853,10 +853,10 @@ def main():
             cost_str = f" {DIM}~{fmt_cost(session_api_cost)}{RESET}"
 
     if args.style == "text":
-        parts.append(f"~{fmt_tokens(total_tokens)} {pct_str}{cache_str}{cost_str}")
+        parts.append(f"ctx ~{fmt_tokens(total_tokens)} {pct_str}{cache_str}{cost_str}")
     else:
         bar = progress_bar(used_pct, args.style)
-        parts.append(f"{bar} {pct_str}{cache_str}{cost_str}")
+        parts.append(f"ctx {bar} {pct_str}{cache_str}{cost_str}")
 
     # ── Rate limit usage (session + weekly) ─────────────────────
     # Fetch usage if we need either usage bars or cost accumulation
