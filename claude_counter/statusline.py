@@ -852,11 +852,18 @@ def main():
         if session_api_cost > 0:
             cost_str = f" {DIM}~{fmt_cost(session_api_cost)}{RESET}"
 
+    if context_size >= 1_000_000:
+        ctx_size_label = f"{context_size // 1_000_000}M"
+    elif context_size >= 1_000:
+        ctx_size_label = f"{context_size // 1_000}k"
+    else:
+        ctx_size_label = str(context_size)
+    ctx_size_str = f"/{ctx_size_label}"
     if args.style == "text":
-        parts.append(f"ctx ~{fmt_tokens(total_tokens)} {pct_str}{cache_str}{cost_str}")
+        parts.append(f"ctx ~{fmt_tokens(total_tokens)} {pct_str}{ctx_size_str}{cache_str}{cost_str}")
     else:
         bar = progress_bar(used_pct, args.style)
-        parts.append(f"ctx {bar} {pct_str}{cache_str}{cost_str}")
+        parts.append(f"ctx {bar} {pct_str}{ctx_size_str}{cache_str}{cost_str}")
 
     # ── Rate limit usage (session + weekly) ─────────────────────
     # Fetch usage if we need either usage bars or cost accumulation
