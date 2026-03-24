@@ -35,14 +35,14 @@ Single Python package, no external dependencies. Installable directly from git v
 | `--style` | `dots` | Bar style: text, bar, ball, capped, dots, filled |
 | `--separator` | (matches style) | Separator character between segments |
 | `--git` / `--no-git` | on | Show current git branch |
-| `--no-usage` | off | Disable rate limit usage bars (skip API call) |
+| `--no-usage` | off | Disable rate limit usage bars |
 | `--no-cost` | off | Disable estimated API cost display |
 | `--no-total` | off | Disable billing period total cost display |
 | `--sync` | off | Scan historical transcripts to backfill cost data, then exit |
 
 ## Rate limit usage
 
-Session (5h) and weekly (7d) utilization is fetched from `https://api.anthropic.com/api/oauth/usage` using the OAuth token from Claude Code's credential store (macOS Keychain `Claude Code-credentials` or `~/.claude/.credentials.json` on Linux). Results are cached in `~/.claude/.claude-counter-usage-cache.json` for 15 seconds.
+Session (5h) and weekly (7d) utilization is read from the native `rate_limits` field in Claude Code's stdin JSON (≥2.1.80). If absent, usage bars are not shown.
 
 ## Cost estimation
 
@@ -75,11 +75,11 @@ All fields are optional — missing keys fall back to built-in defaults.
 
 ## Bar styles (credit: Owloops/claude-powerline)
 
-- `dots` (default): `●●●●○○○○○○` separator `●`
-- `bar`: `████░░░░░░` separator `█`
-- `ball`: `────●─────` separator `●`
-- `capped`: `━━━╸┄┄┄┄┄┄` separator `━`
-- `filled`: `■■■■□□□□□□` separator `■`
+- `dots` (default): `●●●○○` separator `●`
+- `bar`: `██░░░` separator `█`
+- `ball`: `──●──` separator `●`
+- `capped`: `━━╸┄┄` separator `━`
+- `filled`: `■■□□□` separator `■`
 - `text`: `~19.0k 40%` separator `●`
 
 ## Version Bumping

@@ -16,7 +16,6 @@ import calendar
 import glob as globmod
 import json
 import os
-import platform
 import subprocess
 import sys
 import time
@@ -26,7 +25,6 @@ from datetime import datetime, timezone
 
 # ── Paths ─────────────────────────────────────────────────────────────
 CONFIG_FILE = os.path.expanduser("~/.claude/.claude-counter-config.json")
-USAGE_CACHE_FILE = os.path.expanduser("~/.claude/.claude-counter-usage-cache.json")
 COST_STATE_FILE = os.path.expanduser("~/.claude/.claude-counter-cost-state.json")
 PRICING_CACHE_FILE = os.path.expanduser("~/.claude/.claude-counter-pricing-cache.json")
 PRICING_CACHE_TTL = 86400  # 24 hours
@@ -45,10 +43,9 @@ MAGENTA = "\033[35m"
 
 # ── Defaults (written to config on first run) ─────────────────────────
 DEFAULT_CONFIG = {
-    "bar_width": 10,
+    "bar_width": 5,
     "warn_pct": 80,
     "crit_pct": 95,
-    "usage_cache_ttl": 15,
     "bar_styles": {
         "bar":    ["█", "░", None, None],
         "ball":   ["─", "─", None, "●"],
@@ -105,7 +102,6 @@ def _load_config():
         "bar_width": int(get("bar_width")),
         "warn_pct": int(get("warn_pct")),
         "crit_pct": int(get("crit_pct")),
-        "usage_cache_ttl": int(get("usage_cache_ttl")),
         "cache_read_factor": float(get("cache_read_factor")),
         "cache_write_factor": float(get("cache_write_factor")),
         "billing_day": int(get("billing_day")),
@@ -115,8 +111,8 @@ def _load_config():
     raw_styles = get("bar_styles")
     cfg["bar_styles"] = {}
     for name, chars in raw_styles.items():
-        if isinstance(chars, list) and len(chars) == 4:
-            cfg["bar_styles"][name] = tuple(chars)
+        if isinstance(chars, list) and len(chars) >= 4:
+            cfg["bar_styles"][name] = tuple(chars[:4])
 
     # Separators
     cfg["separators"] = dict(get("separators"))
@@ -128,7 +124,6 @@ CFG = _load_config()
 BAR_WIDTH = CFG["bar_width"]
 WARN_PCT = CFG["warn_pct"]
 CRIT_PCT = CFG["crit_pct"]
-USAGE_CACHE_TTL = CFG["usage_cache_ttl"]
 BAR_STYLES = CFG["bar_styles"]
 STYLE_SEPARATORS = CFG["separators"]
 CACHE_READ_FACTOR = CFG["cache_read_factor"]
@@ -153,12 +148,6 @@ def _load_pricing():
 
 
 API_PRICING = _load_pricing()
-
-USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage"
-USAGE_API_HEADERS = {
-    "anthropic-beta": "oauth-2025-04-20",
-    "Content-Type": "application/json",
-}
 
 
 # ── Formatting ────────────────────────────────────────────────────────
@@ -196,11 +185,17 @@ def fmt_dir(cwd):
 
 
 def fmt_reset(resets_at):
-    """Format resets_at ISO timestamp as a compact relative string."""
+    """Format resets_at (ISO timestamp or Unix epoch) as a compact relative string."""
     try:
-        # Parse ISO 8601 with timezone
-        ts = resets_at.replace("+00:00", "Z").replace("Z", "+00:00")
-        dt = datetime.fromisoformat(ts)
+        # Handle Unix epoch (number or numeric string)
+        if isinstance(resets_at, (int, float)):
+            dt = datetime.fromtimestamp(resets_at, tz=timezone.utc)
+        elif isinstance(resets_at, str) and resets_at.replace(".", "", 1).isdigit():
+            dt = datetime.fromtimestamp(float(resets_at), tz=timezone.utc)
+        else:
+            # Parse ISO 8601 with timezone
+            ts = resets_at.replace("+00:00", "Z").replace("Z", "+00:00")
+            dt = datetime.fromisoformat(ts)
         now = datetime.now(timezone.utc)
         delta = (dt - now).total_seconds()
         if delta <= 0:
@@ -263,20 +258,44 @@ def get_git_worktree(cwd):
     return None, None
 
 
+# RGB values for bar colors, used for truecolor gradient shading
+_COLOR_RGB = {
+    "blue":   (80, 120, 220),
+    "yellow": (200, 180, 50),
+    "red":    (220, 60, 60),
+}
+_EMPTY_RGB = (90, 90, 90)  # matches GRAY
+
+
+def _truecolor_fg(r, g, b):
+    return f"\033[38;2;{r};{g};{b}m"
+
+
+def _lerp_rgb(rgb_a, rgb_b, t):
+    """Linear interpolate between two RGB tuples. t=0 → a, t=1 → b."""
+    return tuple(int(a + (b - a) * t) for a, b in zip(rgb_a, rgb_b))
+
+
 def progress_bar(pct, style_name, width=BAR_WIDTH):
     pct = max(0.0, min(100.0, pct))
-    filled_count = int(pct / 100 * width)
-    filled_count = min(filled_count, width)
-    empty_count = width - filled_count
+    frac = pct / 100 * width
 
     if pct >= CRIT_PCT:
         color = RED + BOLD
+        color_key = "red"
     elif pct >= WARN_PCT:
         color = YELLOW
+        color_key = "yellow"
     else:
         color = BLUE
+        color_key = "blue"
 
-    filled_ch, empty_ch, cap_ch, marker_ch = BAR_STYLES[style_name]
+    style = BAR_STYLES[style_name]
+    filled_ch, empty_ch = style[0], style[1]
+    cap_ch = style[2] if len(style) > 2 else None
+    marker_ch = style[3] if len(style) > 3 else None
+
+    filled_count = min(int(frac), width)
 
     if marker_ch:
         pos = min(filled_count, width - 1)
@@ -289,10 +308,22 @@ def progress_bar(pct, style_name, width=BAR_WIDTH):
         elif filled_count >= width:
             bar = filled_ch * width
         else:
-            bar = filled_ch * (filled_count - 1) + cap_ch + empty_ch * empty_count
+            bar = filled_ch * (filled_count - 1) + cap_ch + empty_ch * (width - filled_count)
         return f"{color}{bar}{RESET}"
 
-    return f"{color}{filled_ch * filled_count}{GRAY}{empty_ch * empty_count}{RESET}"
+    # Solid fill + one dimmed fractional cell + gray empty
+    frac_part = frac - filled_count
+    empty_count = width - filled_count
+    if frac_part > 0.05 and filled_count < width:
+        # Fractional cell: same filled glyph at a weaker shade of the fill color
+        # Blend from 40% to 85% of fill color based on fraction
+        alpha = 0.4 + 0.45 * frac_part
+        dimmed = tuple(int(c * alpha) for c in _COLOR_RGB[color_key])
+        frac_cell = f"{_truecolor_fg(*dimmed)}{filled_ch}"
+        empty_count -= 1
+    else:
+        frac_cell = ""
+    return f"{color}{filled_ch * filled_count}{frac_cell}{GRAY}{empty_ch * empty_count}{RESET}"
 
 
 def estimate_api_cost(model_name, total_input, total_output, cache_read, cache_creation):
@@ -389,24 +420,9 @@ def _save_cost_state(state):
         pass
 
 
-def update_accumulated_costs(session_id, session_cost, five_hour_resets_at, seven_day_resets_at):
-    """Track per-session costs, reset when rate limit windows roll over.
-
-    Returns (window_5h_cost, window_7d_cost, billing_cost).
-    """
+def update_accumulated_costs(session_id, session_cost):
+    """Track per-session costs for the billing period. Returns billing_cost."""
     state = _load_cost_state()
-
-    # Check if the 5h window rolled over → clear 5h costs
-    prev_5h_reset = state.get("five_hour_resets_at", "")
-    if five_hour_resets_at and five_hour_resets_at != prev_5h_reset:
-        state["five_hour_sessions"] = {}
-        state["five_hour_resets_at"] = five_hour_resets_at
-
-    # Check if the 7d window rolled over → clear 7d costs
-    prev_7d_reset = state.get("seven_day_resets_at", "")
-    if seven_day_resets_at and seven_day_resets_at != prev_7d_reset:
-        state["seven_day_sessions"] = {}
-        state["seven_day_resets_at"] = seven_day_resets_at
 
     # Check if billing period rolled over → re-sync from transcripts
     current_period = _billing_period_key()
@@ -415,30 +431,16 @@ def update_accumulated_costs(session_id, session_cost, five_hour_resets_at, seve
             sync_historical_costs()
             state = _load_cost_state()
         except Exception:
-            # Fallback: just clear if sync fails
             state["billing_sessions"] = {}
             state["billing_period"] = current_period
 
-    # Update this session's cost in all windows
-    five_hour_sessions = state.get("five_hour_sessions", {})
-    seven_day_sessions = state.get("seven_day_sessions", {})
     billing_sessions = state.get("billing_sessions", {})
-
-    five_hour_sessions[session_id] = session_cost
-    seven_day_sessions[session_id] = session_cost
     billing_sessions[session_id] = session_cost
-
-    state["five_hour_sessions"] = five_hour_sessions
-    state["seven_day_sessions"] = seven_day_sessions
     state["billing_sessions"] = billing_sessions
 
     _save_cost_state(state)
 
-    return (
-        sum(five_hour_sessions.values()),
-        sum(seven_day_sessions.values()),
-        sum(billing_sessions.values()),
-    )
+    return sum(billing_sessions.values())
 
 
 # ── Historical transcript sync ───────────────────────────────────────
@@ -634,103 +636,6 @@ def sync_historical_costs():
     return len(session_costs), total
 
 
-# ── OAuth token retrieval ─────────────────────────────────────────────
-def get_oauth_token():
-    """Retrieve Claude Code OAuth access token from OS credential store."""
-    system = platform.system()
-
-    if system == "Darwin":
-        # macOS: read from Keychain
-        # Multiple entries may exist — find accounts with claudeAiOauth tokens
-        try:
-            result = subprocess.run(
-                ["security", "dump-keychain"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.returncode == 0:
-                accounts = []
-                lines = result.stdout.splitlines()
-                in_creds_entry = False
-                for line in lines:
-                    if '"Claude Code-credentials"' in line and "0x00000007" in line:
-                        in_creds_entry = True
-                    elif in_creds_entry and '"acct"<blob>=' in line:
-                        acct = line.split('"acct"<blob>="', 1)[-1].rstrip('"') if '"acct"<blob>="' in line else ""
-                        if acct:
-                            accounts.append(acct)
-                        in_creds_entry = False
-
-                for acct in accounts:
-                    try:
-                        r = subprocess.run(
-                            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-a", acct, "-w"],
-                            capture_output=True, text=True, timeout=5,
-                        )
-                        if r.returncode == 0:
-                            creds = json.loads(r.stdout.strip())
-                            token = creds.get("claudeAiOauth", {}).get("accessToken")
-                            if token:
-                                return token
-                    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
-                        continue
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    else:
-        # Linux/WSL: read from credentials file
-        creds_file = os.path.expanduser("~/.claude/.credentials.json")
-        try:
-            with open(creds_file) as f:
-                creds = json.load(f)
-                return creds.get("claudeAiOauth", {}).get("accessToken")
-        except (FileNotFoundError, json.JSONDecodeError, KeyError):
-            pass
-
-    return None
-
-
-# ── Usage data fetching with cache ────────────────────────────────────
-def load_usage_cache():
-    try:
-        with open(USAGE_CACHE_FILE) as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return {}
-
-
-def save_usage_cache(data):
-    try:
-        os.makedirs(os.path.dirname(USAGE_CACHE_FILE), exist_ok=True)
-        with open(USAGE_CACHE_FILE, "w") as f:
-            json.dump(data, f)
-    except OSError:
-        pass
-
-
-def fetch_usage():
-    """Fetch rate limit usage from Anthropic OAuth API, with caching."""
-    cache = load_usage_cache()
-    cached_at = cache.get("_cached_at", 0)
-
-    if time.time() - cached_at < USAGE_CACHE_TTL:
-        return cache
-
-    token = get_oauth_token()
-    if not token:
-        return cache if cache else None
-
-    try:
-        headers = dict(USAGE_API_HEADERS)
-        headers["Authorization"] = f"Bearer {token}"
-
-        req = urllib.request.Request(USAGE_API_URL, headers=headers, method="GET")
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode())
-            data["_cached_at"] = time.time()
-            save_usage_cache(data)
-            return data
-    except (urllib.error.URLError, json.JSONDecodeError, OSError, TimeoutError):
-        return cache if cache else None
-
 
 # ── Main ──────────────────────────────────────────────────────────────
 def main():
@@ -751,7 +656,7 @@ def main():
     )
     parser.add_argument(
         "--no-usage", action="store_true",
-        help="Disable rate limit usage bars (skip API call)",
+        help="Disable rate limit usage bars",
     )
     parser.add_argument(
         "--no-cost", action="store_true",
@@ -866,55 +771,38 @@ def main():
         parts.append(f"ctx {bar} {pct_str}{ctx_size_str}{cache_str}{cost_str}")
 
     # ── Rate limit usage (session + weekly) ─────────────────────
-    # Fetch usage if we need either usage bars or cost accumulation
-    usage = None
-    window_5h_cost = 0.0
-    window_7d_cost = 0.0
+    # Read from native rate_limits field (Claude Code ≥2.1.80)
     billing_cost = 0.0
 
-    if not args.no_usage or not args.no_cost:
-        usage = fetch_usage()
-        if usage:
-            five_hour = usage.get("five_hour") or {}
-            seven_day = usage.get("seven_day") or {}
+    rate_limits = data.get("rate_limits") or {}
+    five_hour = rate_limits.get("five_hour") or {}
+    seven_day = rate_limits.get("seven_day") or {}
 
-            session_pct = five_hour.get("utilization", 0)
-            session_reset = five_hour.get("resets_at", "")
-            weekly_pct = seven_day.get("utilization", 0)
-            weekly_reset = seven_day.get("resets_at", "")
+    # Accumulate billing cost (independent of rate_limits presence)
+    session_id = data.get("session_id") or ""
+    if not args.no_cost and session_id and session_api_cost > 0:
+        billing_cost = update_accumulated_costs(session_id, session_api_cost)
 
-            # Accumulate costs aligned with rate limit windows
-            session_id = data.get("session_id") or ""
-            if not args.no_cost and session_id and session_api_cost > 0:
-                window_5h_cost, window_7d_cost, billing_cost = update_accumulated_costs(
-                    session_id, session_api_cost, session_reset, weekly_reset,
-                )
+    if five_hour or seven_day:
+        session_pct = five_hour.get("used_percentage", 0)
+        session_reset = five_hour.get("resets_at", "")
+        weekly_pct = seven_day.get("used_percentage", 0)
+        weekly_reset = seven_day.get("resets_at", "")
 
-            # Usage bars (without costs — costs shown separately)
-            if not args.no_usage:
-                if session_pct is not None:
-                    parts.append(usage_segment(
-                        "5h", session_pct, session_reset, args.style,
-                    ))
+        # Usage bars
+        if not args.no_usage:
+            if session_pct is not None:
+                parts.append(usage_segment(
+                    "5h", session_pct, session_reset, args.style,
+                ))
+            if weekly_pct is not None:
+                parts.append(usage_segment(
+                    "7d", weekly_pct, weekly_reset, args.style,
+                ))
 
-                if weekly_pct is not None:
-                    parts.append(usage_segment(
-                        "7d", weekly_pct, weekly_reset, args.style,
-                    ))
-
-    # ── Accumulated costs (5h + 7d + billing total) ───────────
-    if not args.no_cost:
-        cost_parts = []
-        if window_5h_cost > 0:
-            cost_parts.append(f"5h ~{fmt_cost(window_5h_cost)}")
-        if window_7d_cost > 0:
-            cost_parts.append(f"7d ~{fmt_cost(window_7d_cost)}")
-        if cost_parts:
-            parts.append(f"{DIM}{' '.join(cost_parts)}{RESET}")
-
-        # Billing period total
-        if not args.no_total and billing_cost > 0:
-            parts.append(f"{DIM}~{fmt_cost(billing_cost)}/mo{RESET}")
+    # ── Billing period total cost ────────────────────────────
+    if not args.no_cost and not args.no_total and billing_cost > 0:
+        parts.append(f"{DIM}~{fmt_cost(billing_cost)}/mo{RESET}")
 
     print(sep.join(parts))
 

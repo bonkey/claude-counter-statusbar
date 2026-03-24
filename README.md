@@ -46,7 +46,7 @@ Or with `pipx`:
 | `--style` | `dots` | Bar style: `text`, `bar`, `ball`, `capped`, `dots`, `filled` |
 | `--separator` | *(matches style)* | Separator character between segments |
 | `--git` / `--no-git` | on | Show current git branch |
-| `--no-usage` | off | Disable rate limit usage bars (skip API call) |
+| `--no-usage` | off | Disable rate limit usage bars |
 | `--no-cost` | off | Disable estimated API cost display |
 | `--no-total` | off | Disable billing period total cost display |
 | `--sync` | off | Scan historical transcripts to backfill cost data, then exit |
@@ -66,11 +66,11 @@ Example with all options:
 
 | Style | Bar | Separator |
 |-------|-----|-----------|
-| `dots` (default) | `●●●●○○○○○○` | `●` |
-| `bar` | `████░░░░░░` | `█` |
-| `ball` | `────●─────` | `●` |
-| `capped` | `━━━╸┄┄┄┄┄┄` | `━` |
-| `filled` | `■■■■□□□□□□` | `■` |
+| `dots` (default) | `●●●○○` | `●` |
+| `bar` | `██░░░` | `█` |
+| `ball` | `──●──` | `●` |
+| `capped` | `━━╸┄┄` | `━` |
+| `filled` | `■■□□□` | `■` |
 | `text` | `~19.0k 40%` | `●` |
 
 ### Alternative: install globally
@@ -120,7 +120,7 @@ All fields are optional — missing keys fall back to built-in defaults. Bar sty
 
 Model pricing is fetched automatically from [LiteLLM](https://github.com/BerriAI/litellm) and cached in `~/.claude/.claude-counter-pricing-cache.json` (refreshed every 24 hours). Cache read/write factors can be overridden in config — `cache_write_factor` defaults to 2.0 (1-hour caching used by Claude Code).
 
-Rate limit utilization (session 5h and weekly 7d) is fetched from the Anthropic OAuth API using Claude Code's stored credentials (macOS Keychain or `~/.claude/.credentials.json` on Linux). Results are cached for 15 seconds to avoid excessive API calls.
+Rate limit utilization (session 5h and weekly 7d) is read from the native `rate_limits` field provided by Claude Code ≥2.1.80. If the field is absent (older versions), usage bars are simply not shown.
 
 ## Credits
 
