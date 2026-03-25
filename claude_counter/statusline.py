@@ -24,7 +24,6 @@ import urllib.error
 from datetime import datetime, timezone
 
 # ── Paths ─────────────────────────────────────────────────────────────
-CONFIG_FILE = os.path.expanduser("~/.claude/.claude-counter-config.json")
 COST_STATE_FILE = os.path.expanduser("~/.claude/.claude-counter-cost-state.json")
 PRICING_CACHE_FILE = os.path.expanduser("~/.claude/.claude-counter-pricing-cache.json")
 PRICING_CACHE_TTL = 86400  # 24 hours
@@ -41,29 +40,29 @@ GRAY = "\033[90m"
 CYAN = "\033[36m"
 MAGENTA = "\033[35m"
 
-# ── Defaults (written to config on first run) ─────────────────────────
-DEFAULT_CONFIG = {
-    "bar_width": 5,
-    "warn_pct": 80,
-    "crit_pct": 95,
-    "bar_styles": {
-        "bar":    ["█", "░", None, None],
-        "ball":   ["─", "─", None, "●"],
-        "capped": ["━", "┄", "╸", None],
-        "dots":   ["●", "○", None, None],
-        "filled": ["■", "□", None, None],
-    },
-    "separators": {
-        "text":   "●",
-        "bar":    "█",
-        "ball":   "●",
-        "capped": "━",
-        "dots":   "●",
-        "filled": "■",
-    },
-    "cache_read_factor": 0.10,
-    "cache_write_factor": 2.0,
-    "billing_day": 1,
+# ── Constants ─────────────────────────────────────────────────────────
+BAR_WIDTH = 5
+WARN_PCT = 80
+CRIT_PCT = 95
+CACHE_READ_FACTOR = 0.10
+CACHE_WRITE_FACTOR = 2.0
+BILLING_DAY = 1  # default, overridable via --billing-day
+
+BAR_STYLES = {
+    "bar":    ("█", "░", None, None),
+    "ball":   ("─", "─", None, "●"),
+    "capped": ("━", "┄", "╸", None),
+    "dots":   ("●", "○", None, None),
+    "filled": ("■", "□", None, None),
+}
+
+STYLE_SEPARATORS = {
+    "text":   "●",
+    "bar":    "█",
+    "ball":   "●",
+    "capped": "━",
+    "dots":   "●",
+    "filled": "■",
 }
 
 # Hardcoded fallback — only used if LiteLLM fetch has never succeeded
@@ -72,63 +71,6 @@ FALLBACK_PRICING = {
     "sonnet": (3.0, 15.0),
     "haiku":  (1.0, 5.0),
 }
-
-
-def _load_config():
-    """Load config from file, creating it with defaults if missing."""
-    config = None
-    try:
-        with open(CONFIG_FILE) as f:
-            config = json.load(f)
-    except FileNotFoundError:
-        # Auto-create with defaults
-        try:
-            os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
-            with open(CONFIG_FILE, "w") as f:
-                json.dump(DEFAULT_CONFIG, f, indent=2, ensure_ascii=False)
-        except OSError:
-            pass
-    except (json.JSONDecodeError, OSError):
-        pass
-
-    if not config:
-        config = {}
-
-    def get(key):
-        return config.get(key, DEFAULT_CONFIG[key])
-
-    # Scalars
-    cfg = {
-        "bar_width": int(get("bar_width")),
-        "warn_pct": int(get("warn_pct")),
-        "crit_pct": int(get("crit_pct")),
-        "cache_read_factor": float(get("cache_read_factor")),
-        "cache_write_factor": float(get("cache_write_factor")),
-        "billing_day": int(get("billing_day")),
-    }
-
-    # Bar styles: convert lists to tuples
-    raw_styles = get("bar_styles")
-    cfg["bar_styles"] = {}
-    for name, chars in raw_styles.items():
-        if isinstance(chars, list) and len(chars) >= 4:
-            cfg["bar_styles"][name] = tuple(chars[:4])
-
-    # Separators
-    cfg["separators"] = dict(get("separators"))
-
-    return cfg
-
-
-CFG = _load_config()
-BAR_WIDTH = CFG["bar_width"]
-WARN_PCT = CFG["warn_pct"]
-CRIT_PCT = CFG["crit_pct"]
-BAR_STYLES = CFG["bar_styles"]
-STYLE_SEPARATORS = CFG["separators"]
-CACHE_READ_FACTOR = CFG["cache_read_factor"]
-CACHE_WRITE_FACTOR = CFG["cache_write_factor"]
-BILLING_DAY = CFG["billing_day"]
 
 
 def _load_pricing():
@@ -670,7 +612,16 @@ def main():
         "--sync", action="store_true",
         help="Scan historical transcripts to backfill cost data, then exit",
     )
+    parser.add_argument(
+        "--billing-day", type=int, default=None,
+        help="Day of month billing resets (default: 1)",
+    )
     args = parser.parse_args()
+
+    # Override global BILLING_DAY if specified
+    if args.billing_day is not None:
+        global BILLING_DAY
+        BILLING_DAY = args.billing_day
 
     # ── Sync mode (standalone) ────────────────────────────────────
     if args.sync:

@@ -49,6 +49,7 @@ Or with `pipx`:
 | `--no-usage` | off | Disable rate limit usage bars |
 | `--no-cost` | off | Disable estimated API cost display |
 | `--no-total` | off | Disable billing period total cost display |
+| `--billing-day` | `1` | Day of month billing resets |
 | `--sync` | off | Scan historical transcripts to backfill cost data, then exit |
 
 Example with all options:
@@ -89,36 +90,9 @@ Run `claude-counter --sync` to backfill historical costs from Claude Code transc
 
 Estimated API cost shows what the current session's token usage would cost on the Anthropic API, with per-model pricing (Opus/Sonnet/Haiku) and cache discounts (reads at 10%, writes at 125% of input price). Costs are accumulated across sessions in `~/.claude/.claude-counter-cost-state.json` — daily totals shown on the 5h bar, weekly totals on the 7d bar (auto-prunes after 7 days). Pricing source: [she-llac.com/claude-limits](https://she-llac.com/claude-limits).
 
-### Configuration
+### Pricing
 
-`~/.claude/.claude-counter-config.json` is auto-created on first run with all defaults:
-
-```json
-{
-  "bar_width": 10,
-  "warn_pct": 80,
-  "crit_pct": 95,
-  "usage_cache_ttl": 15,
-  "bar_styles": {
-    "dots": ["●", "○", null, null],
-    "bar": ["█", "░", null, null],
-    "ball": ["─", "─", null, "●"],
-    "capped": ["━", "┄", "╸", null],
-    "filled": ["■", "□", null, null]
-  },
-  "separators": {
-    "text": "●", "bar": "█", "ball": "●",
-    "capped": "━", "dots": "●", "filled": "■"
-  },
-  "cache_read_factor": 0.10,
-  "cache_write_factor": 2.0,
-  "billing_day": 1
-}
-```
-
-All fields are optional — missing keys fall back to built-in defaults. Bar style chars are `[filled, empty, cap, marker]` (use `null` for unused).
-
-Model pricing is fetched automatically from [LiteLLM](https://github.com/BerriAI/litellm) and cached in `~/.claude/.claude-counter-pricing-cache.json` (refreshed every 24 hours). Cache read/write factors can be overridden in config — `cache_write_factor` defaults to 2.0 (1-hour caching used by Claude Code).
+Model pricing is fetched automatically from [LiteLLM](https://github.com/BerriAI/litellm) and cached in `~/.claude/.claude-counter-pricing-cache.json` (refreshed every 24 hours).
 
 Rate limit utilization (session 5h and weekly 7d) is read from the native `rate_limits` field provided by Claude Code ≥2.1.80. If the field is absent (older versions), usage bars are simply not shown.
 

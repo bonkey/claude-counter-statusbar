@@ -6,6 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **Always update README.md** when adding, removing, or changing CLI options/configuration. The README is the user-facing docs and must stay in sync with the actual `--flags` in `statusline.py`.
 - **Always bump version before push.** Increment the patch version in both `pyproject.toml` and `claude_counter/__init__.py` when making any functional change.
+- **Verify hardcoded pricing before release.** Before each version bump, fetch current prices from LiteLLM (`LITELLM_PRICING_URL`) and update `FALLBACK_PRICING` in `statusline.py` if they've changed. Also update `model_map` keys if new model IDs have replaced old ones.
 
 ## Project Overview
 
@@ -38,6 +39,7 @@ Single Python package, no external dependencies. Installable directly from git v
 | `--no-usage` | off | Disable rate limit usage bars |
 | `--no-cost` | off | Disable estimated API cost display |
 | `--no-total` | off | Disable billing period total cost display |
+| `--billing-day` | `1` | Day of month billing resets |
 | `--sync` | off | Scan historical transcripts to backfill cost data, then exit |
 
 ## Rate limit usage
@@ -46,7 +48,7 @@ Session (5h) and weekly (7d) utilization is read from the native `rate_limits` f
 
 ## Cost estimation
 
-Estimated API cost is calculated per-model with cache discounts. Pricing is auto-fetched from LiteLLM and cached in `~/.claude/.claude-counter-pricing-cache.json` (24h TTL). Cache reads at 10%, writes at 200% of input price (1-hour caching used by Claude Code). Per-session costs are accumulated in `~/.claude/.claude-counter-cost-state.json` — 5h totals, 7d totals, and billing period total (resets on `billing_day` from config, default 1st).
+Estimated API cost is calculated per-model with cache discounts. Pricing is auto-fetched from LiteLLM and cached in `~/.claude/.claude-counter-pricing-cache.json` (24h TTL). Cache reads at 10%, writes at 200% of input price (1-hour caching used by Claude Code). Per-session costs are accumulated in `~/.claude/.claude-counter-cost-state.json` — 5h totals, 7d totals, and billing period total (resets on `--billing-day`, default 1st).
 
 ## Historical sync
 
@@ -55,12 +57,6 @@ Estimated API cost is calculated per-model with cache discounts. Pricing is auto
 2. **Scans transcripts** in `~/.claude/projects/*/*.jsonl` to backfill cost data from past sessions (deduplicated by `requestId` to avoid counting streaming updates)
 
 Only processes files modified within the current billing period. Run periodically to update pricing and recalculate costs.
-
-## Config file
-
-`~/.claude/.claude-counter-config.json` — auto-created on first run with all defaults. Edit to customize pricing, bar styles, thresholds, etc.
-
-All fields are optional — missing keys fall back to built-in defaults.
 
 ## Install pattern
 
