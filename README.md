@@ -1,13 +1,12 @@
 # Claude Counter
 
-A statusline for [Claude Code](https://claude.ai/code) showing token usage, cache status, and real rate limit utilization.
+A statusline for [Claude Code](https://claude.ai/code) showing token usage, cost, and real rate limit utilization.
 
 ## Features
 
-- **Current directory + model** — At-a-glance context
+- **Current directory + model + reasoning effort** — At-a-glance context (effort shown as █ high / ▅ medium / ▂ low, read from `~/.claude/settings.json`)
 - **Git branch + worktree** — On by default (shows `[worktree-name]` when in a linked worktree; `--no-git` to disable)
 - **Token progress bar** — Context usage with color-coded warnings (blue → yellow → red)
-- **Cache status** — Cached vs freshly written tokens from the last API call
 - **Estimated API cost** — What this session would cost on the Anthropic API (per-model pricing with cache discounts)
 - **Session usage bar (5h)** — Rolling 5-hour rate limit utilization with reset countdown + accumulated API cost
 - **Weekly usage bar (7d)** — Rolling 7-day rate limit utilization with reset countdown + accumulated API cost
@@ -84,7 +83,7 @@ Then use `"command": "claude-counter"` (with any flags).
 
 ## How it works
 
-Claude Code sends JSON via stdin after each assistant message. The script reads `context_window`, `model`, and `workspace` fields and renders a compact status line with ANSI colors.
+Claude Code sends JSON via stdin after each assistant message. The script reads `context_window`, `model`, `workspace`, `rate_limits`, and `session_id` fields and renders a compact status line with ANSI colors. Reasoning effort is read from `~/.claude/settings.json` (workaround until exposed in the statusline JSON).
 
 Run `claude-counter --sync` to backfill historical costs from Claude Code transcripts (`~/.claude/projects/*/*.jsonl`). It also fetches the latest model pricing from [LiteLLM](https://github.com/BerriAI/litellm). Scans all sessions in the current billing period (deduplicated by request ID) and populates the cost state. After that, costs accumulate automatically on each statusline update. Run periodically to keep pricing current.
 

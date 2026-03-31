@@ -24,6 +24,7 @@ import urllib.error
 from datetime import datetime, timezone
 
 # ── Paths ─────────────────────────────────────────────────────────────
+CLAUDE_SETTINGS_FILE = os.path.expanduser("~/.claude/settings.json")
 COST_STATE_FILE = os.path.expanduser("~/.claude/.claude-counter-cost-state.json")
 PRICING_CACHE_FILE = os.path.expanduser("~/.claude/.claude-counter-pricing-cache.json")
 PRICING_CACHE_TTL = 86400  # 24 hours
@@ -673,10 +674,20 @@ def main():
     if git_part:
         parts.append(git_part)
 
-    # ── Model ─────────────────────────────────────────────────────
+    # ── Model + reasoning effort ────────────────────────────────
     model_name = model_data.get("display_name") or ""
     if model_name:
-        parts.append(f"{MAGENTA}{model_name}{RESET}")
+        effort_indicator = ""
+        try:
+            with open(CLAUDE_SETTINGS_FILE, "r") as f:
+                effort = json.load(f).get("effortLevel", "")
+            if effort and effort != "default":
+                effort_map = {"high": (RED, "█"), "medium": (YELLOW, "▅"), "low": (GREEN, "▂")}
+                color, icon = effort_map.get(effort, (DIM, effort))
+                effort_indicator = f"{color}{icon}{RESET} "
+        except (OSError, json.JSONDecodeError):
+            pass
+        parts.append(f"{effort_indicator}{MAGENTA}{model_name}{RESET}")
 
     # ── Token count + progress bar + cache (grouped) ──────────────
     total_input = ctx.get("total_input_tokens") or 0
@@ -696,8 +707,6 @@ def main():
     cache_read = current.get("cache_read_input_tokens") or 0
     cache_creation = current.get("cache_creation_input_tokens") or 0
 
-    cache_str = ""
-
     # Estimated API cost (grouped with token bar, no separator)
     cost_str = ""
     session_api_cost = 0.0
@@ -716,10 +725,10 @@ def main():
         ctx_size_label = str(context_size)
     ctx_size_str = f"/{ctx_size_label}"
     if args.style == "text":
-        parts.append(f"ctx ~{fmt_tokens(total_tokens)} {pct_str}{ctx_size_str}{cache_str}{cost_str}")
+        parts.append(f"ctx ~{fmt_tokens(total_tokens)} {pct_str}{ctx_size_str}{cost_str}")
     else:
         bar = progress_bar(used_pct, args.style)
-        parts.append(f"ctx {bar} {pct_str}{ctx_size_str}{cache_str}{cost_str}")
+        parts.append(f"ctx {bar} {pct_str}{ctx_size_str}{cost_str}")
 
     # ── Rate limit usage (session + weekly) ─────────────────────
     # Read from native rate_limits field (Claude Code ≥2.1.80)
