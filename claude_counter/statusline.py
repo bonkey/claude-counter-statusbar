@@ -57,6 +57,13 @@ BAR_STYLES = {
     "filled": ("■", "□", None, None),
 }
 
+# Reasoning effort icon presets: (low, medium, high, max)
+EFFORT_PRESETS = {
+    "arrows":  ("↓", "→", "↑", "⇑"),
+    "bubbles": ("🫧", "💭", "🧠", "🔥"),
+}
+EFFORT_COLORS = (GREEN, YELLOW, RED, RED)
+
 STYLE_SEPARATORS = {
     "text":   "●",
     "bar":    "█",
@@ -617,6 +624,10 @@ def main():
         "--billing-day", type=int, default=None,
         help="Day of month billing resets (default: 1)",
     )
+    parser.add_argument(
+        "--effort-icons", default="arrows",
+        help="Effort indicator preset (arrows, bubbles, bars) or 4 custom icons comma-separated (e.g. '↓,→,↑,⇑')",
+    )
     args = parser.parse_args()
 
     # Override global BILLING_DAY if specified
@@ -682,9 +693,20 @@ def main():
             with open(CLAUDE_SETTINGS_FILE, "r") as f:
                 effort = json.load(f).get("effortLevel", "")
             if effort and effort != "default":
-                effort_map = {"high": (RED, "█"), "medium": (YELLOW, "▅"), "low": (GREEN, "▂")}
-                color, icon = effort_map.get(effort, (DIM, effort))
-                effort_indicator = f"{color}{icon}{RESET} "
+                levels = {"low": 0, "medium": 1, "high": 2, "max": 3}
+                idx = levels.get(effort)
+                if idx is not None:
+                    preset = args.effort_icons
+                    if preset == "style":
+                        filled, empty = BAR_STYLES.get(args.style, ("●", "○"))[:2]
+                        n = idx + 1
+                        effort_indicator = f"{EFFORT_COLORS[idx]}{filled * n}{DIM}{empty * (4 - n)}{RESET} "
+                    else:
+                        icons = EFFORT_PRESETS.get(preset)
+                        if icons is None:
+                            custom = preset.split(",")
+                            icons = tuple(custom[:4]) if len(custom) >= 4 else EFFORT_PRESETS["arrows"]
+                        effort_indicator = f"{EFFORT_COLORS[idx]}{icons[idx]}{RESET} "
         except (OSError, json.JSONDecodeError):
             pass
         parts.append(f"{effort_indicator}{MAGENTA}{model_name}{RESET}")

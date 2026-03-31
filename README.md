@@ -4,7 +4,7 @@ A statusline for [Claude Code](https://claude.ai/code) showing token usage, cost
 
 ## Features
 
-- **Current directory + model + reasoning effort** — At-a-glance context (effort shown as █ high / ▅ medium / ▂ low, read from `~/.claude/settings.json`)
+- **Current directory + model + reasoning effort** — At-a-glance context (read from `~/.claude/settings.json`, configurable icon presets)
 - **Git branch + worktree** — On by default (shows `[worktree-name]` when in a linked worktree; `--no-git` to disable)
 - **Token progress bar** — Context usage with color-coded warnings (blue → yellow → red)
 - **Estimated API cost** — What this session would cost on the Anthropic API (per-model pricing with cache discounts)
@@ -49,6 +49,7 @@ Or with `pipx`:
 | `--no-cost` | off | Disable estimated API cost display |
 | `--no-total` | off | Disable billing period total cost display |
 | `--billing-day` | `1` | Day of month billing resets |
+| `--effort-icons` | `arrows` | Effort preset (`arrows`, `bubbles`, `style`) or 4 custom icons comma-separated |
 | `--sync` | off | Scan historical transcripts to backfill cost data, then exit |
 
 Example with all options:
@@ -72,6 +73,16 @@ Example with all options:
 | `capped` | `━━╸┄┄` | `━` |
 | `filled` | `■■□□□` | `■` |
 | `text` | `~19.0k 40%` | `●` |
+
+### Effort icon presets
+
+| Preset | Low | Medium | High | Max |
+|--------|-----|--------|------|-----|
+| `arrows` (default) | ↓ | → | ↑ | ⇑ |
+| `bubbles` | 🫧 | 💭 | 🧠 | 🔥 |
+| `style` | `●○○○` | `●●○○` | `●●●○` | `●●●●` (matches `--style`) |
+
+Custom: `--effort-icons='🐌,🐇,🐎,🚀'`
 
 ### Alternative: install globally
 

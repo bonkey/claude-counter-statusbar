@@ -39,6 +39,7 @@ Single Python package, no external dependencies. Installable directly from git v
 | `--no-usage` | off | Disable rate limit usage bars |
 | `--no-cost` | off | Disable estimated API cost display |
 | `--no-total` | off | Disable billing period total cost display |
+| `--effort-icons` | `arrows` | Effort preset (arrows, bubbles, style) or 4 custom icons comma-separated |
 | `--billing-day` | `1` | Day of month billing resets |
 | `--sync` | off | Scan historical transcripts to backfill cost data, then exit |
 
