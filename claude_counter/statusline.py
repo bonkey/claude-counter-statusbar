@@ -666,11 +666,14 @@ def main():
         return
 
     # ── iTerm2 session name user variable ──────────────────────
-    if args.iterm_session and sys.stderr.isatty():
+    if args.iterm_session:
         session_name = data.get("session_name") or "claude"
         encoded = base64.b64encode(session_name.encode()).decode()
-        sys.stderr.write(f"\033]1337;SetUserVar=claude_session={encoded}\007")
-        sys.stderr.flush()
+        try:
+            with open("/dev/tty", "w") as tty:
+                tty.write(f"\033]1337;SetUserVar=claude_session={encoded}\007")
+        except OSError:
+            pass
 
     ctx = data.get("context_window") or {}
     model_data = data.get("model") or {}
