@@ -50,6 +50,7 @@ Or with `pipx`:
 | `--no-total` | off | Disable billing period total cost display |
 | `--billing-day` | `1` | Day of month billing resets |
 | `--effort-icons` | `arrows` | Effort preset (`arrows`, `bubbles`, `style`) or 4 custom icons comma-separated |
+| `--iterm-session` / `--no-iterm-session` | on | Set iTerm2 user variable `claude_session` to the session name |
 | `--sync` | off | Scan historical transcripts to backfill cost data, then exit |
 
 Example with all options:
@@ -83,6 +84,14 @@ Example with all options:
 | `style` | `●○○○` | `●●○○` | `●●●○` | `●●●●` (matches `--style`) |
 
 Custom: `--effort-icons='🐌,🐇,🐎,🚀'`
+
+### iTerm2 session name
+
+By default, the script sets the iTerm2 user variable `claude_session` to the current Claude Code session name (falls back to `"claude"` if unnamed). Disable with `--no-iterm-session`.
+
+To display it in iTerm2, add `\(user.claude_session)` to your tab title or status bar:
+- **Tab title:** Profiles → General → Title → use an interpolated string containing `\(user.claude_session)`
+- **Status bar:** Profiles → Session → Status bar enabled → Configure Status Bar → add an Interpolated String component with value `\(user.claude_session)`
 
 ### Alternative: install globally
 

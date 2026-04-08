@@ -12,6 +12,7 @@ Separator auto-matches the bar style (override with --separator).
 """
 
 import argparse
+import base64
 import calendar
 import glob as globmod
 import json
@@ -628,6 +629,10 @@ def main():
         "--effort-icons", default="arrows",
         help="Effort indicator preset (arrows, bubbles, bars) or 4 custom icons comma-separated (e.g. '↓,→,↑,⇑')",
     )
+    parser.add_argument(
+        "--iterm-session", action=argparse.BooleanOptionalAction, default=True,
+        help="Set iTerm2 user variable 'claude_session' to the session name (default: on)",
+    )
     args = parser.parse_args()
 
     # Override global BILLING_DAY if specified
@@ -659,6 +664,13 @@ def main():
     except (json.JSONDecodeError, ValueError):
         print(f"{DIM}waiting for data…{RESET}")
         return
+
+    # ── iTerm2 session name user variable ──────────────────────
+    if args.iterm_session and sys.stderr.isatty():
+        session_name = data.get("session_name") or "claude"
+        encoded = base64.b64encode(session_name.encode()).decode()
+        sys.stderr.write(f"\033]1337;SetUserVar=claude_session={encoded}\007")
+        sys.stderr.flush()
 
     ctx = data.get("context_window") or {}
     model_data = data.get("model") or {}
