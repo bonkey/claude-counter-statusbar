@@ -666,14 +666,13 @@ def main():
         return
 
     # ── iTerm2 session name user variable ──────────────────────
+    # Emitted in stdout so Claude Code passes it through to the terminal.
     if args.iterm_session:
         session_name = data.get("session_name") or "claude"
         encoded = base64.b64encode(session_name.encode()).decode()
-        try:
-            with open("/dev/tty", "w") as tty:
-                tty.write(f"\033]1337;SetUserVar=claude_session={encoded}\007")
-        except OSError:
-            pass
+        iterm_escape = f"\033]1337;SetUserVar=claude_session={encoded}\007"
+    else:
+        iterm_escape = ""
 
     ctx = data.get("context_window") or {}
     model_data = data.get("model") or {}
@@ -801,7 +800,7 @@ def main():
     if not args.no_cost and not args.no_total and billing_cost > 0:
         parts.append(f"{DIM}~{fmt_cost(billing_cost)}/mo{RESET}")
 
-    print(sep.join(parts))
+    print(f"{iterm_escape}{sep.join(parts)}")
 
 
 if __name__ == "__main__":
