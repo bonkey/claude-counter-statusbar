@@ -41,7 +41,6 @@ Single Python package, no external dependencies. Installable directly from git v
 | `--no-total` | off | Disable billing period total cost display |
 | `--effort-icons` | `arrows` | Effort preset (arrows, bubbles, style) or 4 custom icons comma-separated |
 | `--billing-day` | `1` | Day of month billing resets |
-| `--iterm-session` / `--no-iterm-session` | on | Set iTerm2 user variable `claude_session` to the session name |
 | `--sync` | off | Scan historical transcripts to backfill cost data, then exit |
 
 ## Rate limit usage

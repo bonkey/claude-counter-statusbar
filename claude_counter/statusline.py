@@ -12,7 +12,6 @@ Separator auto-matches the bar style (override with --separator).
 """
 
 import argparse
-import base64
 import calendar
 import glob as globmod
 import json
@@ -276,40 +275,6 @@ def progress_bar(pct, style_name, width=BAR_WIDTH):
         frac_cell = ""
     return f"{color}{filled_ch * filled_count}{frac_cell}{GRAY}{empty_ch * empty_count}{RESET}"
 
-
-def _emit_to_tty(escape_seq):
-    """Write an escape sequence to the controlling terminal.
-
-    The statusline subprocess has no /dev/tty, so walk the process tree
-    to find an ancestor with a real tty and write directly to its device.
-    """
-    try:
-        with open("/dev/tty", "w") as tty:
-            tty.write(escape_seq)
-            return
-    except OSError:
-        pass
-    try:
-        pid = os.getpid()
-        for _ in range(10):
-            info = subprocess.run(
-                ["ps", "-o", "ppid=,tty=", "-p", str(pid)],
-                capture_output=True, text=True, timeout=2,
-            )
-            if info.returncode != 0:
-                break
-            parts = info.stdout.split()
-            if len(parts) < 2:
-                break
-            ppid, tty = parts[0], parts[1]
-            if tty != "??" and tty != "?":
-                dev = f"/dev/{tty}"
-                with open(dev, "w") as f:
-                    f.write(escape_seq)
-                return
-            pid = int(ppid)
-    except (OSError, subprocess.TimeoutExpired, ValueError):
-        pass
 
 
 def estimate_api_cost(model_name, total_input, total_output, cache_read, cache_creation):
@@ -664,10 +629,6 @@ def main():
         "--effort-icons", default="arrows",
         help="Effort indicator preset (arrows, bubbles, bars) or 4 custom icons comma-separated (e.g. '↓,→,↑,⇑')",
     )
-    parser.add_argument(
-        "--iterm-session", action=argparse.BooleanOptionalAction, default=True,
-        help="Set iTerm2 user variable 'claude_session' to the session name (default: on)",
-    )
     args = parser.parse_args()
 
     # Override global BILLING_DAY if specified
@@ -699,13 +660,6 @@ def main():
     except (json.JSONDecodeError, ValueError):
         print(f"{DIM}waiting for data…{RESET}")
         return
-
-    # ── iTerm2 session name user variable ──────────────────────
-    if args.iterm_session:
-        session_name = data.get("session_name") or "claude"
-        encoded = base64.b64encode(session_name.encode()).decode()
-        escape = f"\033]1337;SetUserVar=claude_session={encoded}\007"
-        _emit_to_tty(escape)
 
     ctx = data.get("context_window") or {}
     model_data = data.get("model") or {}
