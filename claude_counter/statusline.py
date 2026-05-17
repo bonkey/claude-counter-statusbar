@@ -682,7 +682,7 @@ def main():
             else:
                 git_part = f"{DIM} {branch}{RESET}"
     if dir_name:
-        parts.append(f"{CYAN}{dir_name}{RESET}")
+        parts.append(f"\033[1;7;96m {dir_name} {RESET}")
     if git_part:
         parts.append(git_part)
 
