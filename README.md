@@ -49,7 +49,7 @@ Or with `pipx`:
 | `--no-cost` | off | Disable estimated API cost display |
 | `--no-total` | off | Disable billing period total cost display |
 | `--billing-day` | `1` | Day of month billing resets |
-| `--effort-icons` | `arrows` | Effort preset (`arrows`, `bubbles`, `style`) or 4 custom icons comma-separated |
+| `--effort-icons` | `arrows` | Effort preset (`arrows`, `circles`, `bubbles`, `style`) or custom icons comma-separated (one per tier, low→ultracode) |
 | `--sync` | off | Scan historical transcripts to backfill cost data, then exit |
 
 Example with all options:
@@ -76,13 +76,21 @@ Example with all options:
 
 ### Effort icon presets
 
-| Preset | Low | Medium | High | Max |
-|--------|-----|--------|------|-----|
-| `arrows` (default) | ↓ | → | ↑ | ⇑ |
-| `bubbles` | 🫧 | 💭 | 🧠 | 🔥 |
-| `style` | `●○○○` | `●●○○` | `●●●○` | `●●●●` (matches `--style`) |
+Mirrors Claude Code's effort ramp `low · medium · high · xhigh · max`, plus
+`ultracode` (shown in magenta) as the top state. `fastMode` is layered on top as
+an orange ⚡ suffix when enabled.
 
-Custom: `--effort-icons='🐌,🐇,🐎,🚀'`
+| Preset | Low | Medium | High | xHigh | Max | Ultracode |
+|--------|-----|--------|------|-------|-----|-----------|
+| `arrows` (default) | ↓ | → | ↑ | ⇈ | ⇑ | ✦ |
+| `circles` | ○ | ◐ | ● | ◉ | ◈ | ✦ |
+| `bubbles` | 🫧 | 💭 | 🧠 | 🔥 | 🌋 | ✨ |
+| `style` | `●○○○○○` | `●●○○○○` | … | … | … | `●●●●●●` (matches `--style`) |
+
+Colors ramp green → red across the tiers, with ultracode in magenta.
+
+Custom: `--effort-icons='○,◐,●,◉,◈,✦'` — one icon per tier (low→ultracode).
+Fewer icons clamp to the last, so a future tier never renders blank.
 
 ### Alternative: install globally
 
@@ -94,7 +102,7 @@ Then use `"command": "claude-counter"` (with any flags).
 
 ## How it works
 
-Claude Code sends JSON via stdin after each assistant message. The script reads `context_window`, `model`, `workspace`, `rate_limits`, and `session_id` fields and renders a compact status line with ANSI colors. Reasoning effort is read from `~/.claude/settings.json` (workaround until exposed in the statusline JSON).
+Claude Code sends JSON via stdin after each assistant message. The script reads `context_window`, `model`, `workspace`, `rate_limits`, and `session_id` fields and renders a compact status line with ANSI colors. Reasoning effort is resolved like Claude Code's own logic: `ultracode` (from `~/.claude/settings.json`) wins, then the active per-turn effort (the `CLAUDE_EFFORT` env var, which reflects session overrides and can reach `max`), then the persisted `effortLevel` default in settings. `fastMode` from settings is shown as a ⚡ suffix.
 
 Run `claude-counter --sync` to backfill historical costs from Claude Code transcripts (`~/.claude/projects/*/*.jsonl`). It also fetches the latest model pricing from [LiteLLM](https://github.com/BerriAI/litellm). Scans all sessions in the current billing period (deduplicated by request ID) and populates the cost state. After that, costs accumulate automatically on each statusline update. Run periodically to keep pricing current.
 

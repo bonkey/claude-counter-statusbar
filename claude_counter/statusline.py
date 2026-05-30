@@ -40,6 +40,9 @@ YELLOW = "\033[33m"
 GRAY = "\033[90m"
 CYAN = "\033[36m"
 MAGENTA = "\033[35m"
+LIME = "\033[38;5;148m"
+ORANGE = "\033[38;5;208m"
+BRIGHT_MAGENTA = "\033[95m"
 
 # ── Constants ─────────────────────────────────────────────────────────
 BAR_WIDTH = 5
@@ -57,12 +60,24 @@ BAR_STYLES = {
     "filled": ("■", "□", None, None),
 }
 
-# Reasoning effort icon presets: (low, medium, high, max)
+# Reasoning effort tiers — the source of truth for count/order.
+# Mirrors Claude Code's own ramp ["low","medium","high","xhigh","max"] plus
+# "ultracode" (xhigh effort + standing dynamic-workflow orchestration), which
+# Claude Code surfaces as a separate top state rendered in magenta.
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max", "ultracode")
+EFFORT_COLORS = (GREEN, LIME, YELLOW, ORANGE, RED, BRIGHT_MAGENTA)
+
+# Glyph presets — one symbol per tier. Variable length: shorter presets clamp
+# to their last glyph, so a future tier degrades gracefully instead of vanishing.
 EFFORT_PRESETS = {
-    "arrows":  ("↓", "→", "↑", "⇑"),
-    "bubbles": ("🫧", "💭", "🧠", "🔥"),
+    "arrows":  ("↓", "→", "↑", "⇈", "⇑", "✦"),
+    "circles": ("○", "◐", "●", "◉", "◈", "✦"),
+    "bubbles": ("🫧", "💭", "🧠", "🔥", "🌋", "✨"),
 }
-EFFORT_COLORS = (GREEN, YELLOW, RED, RED)
+
+# fastMode is orthogonal to the effort tier ("fast on top") — shown as a suffix.
+FAST_ICON = "⚡"
+FAST_COLOR = "\033[38;5;202m"  # ~rgb(255,106,0), matches Claude Code's fastMode color
 
 STYLE_SEPARATORS = {
     "text":   "●",
@@ -588,6 +603,37 @@ def sync_historical_costs():
 
 
 
+def read_effort_state():
+    """Resolve the active reasoning effort for display.
+
+    Returns (level_index, fast):
+      level_index — 0..len(EFFORT_LEVELS)-1, or None when effort is default/off.
+      fast        — True when fastMode is enabled.
+
+    Precedence mirrors Claude Code's own resolver (q87): ultracode wins, then
+    the applied per-turn effort (CLAUDE_EFFORT env, which can be "max" and
+    reflects session overrides), then the persisted `effortLevel` default.
+    """
+    settings = {}
+    try:
+        with open(CLAUDE_SETTINGS_FILE, "r") as f:
+            settings = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        settings = {}
+
+    fast = settings.get("fastMode") is True
+
+    if settings.get("ultracode") is True:
+        return EFFORT_LEVELS.index("ultracode"), fast
+
+    raw = os.environ.get("CLAUDE_EFFORT") or settings.get("effortLevel") or ""
+    raw = str(raw).strip().lower()
+    raw = {"med": "medium"}.get(raw, raw)  # Claude Code's alias (H87)
+    if raw in EFFORT_LEVELS and raw != "ultracode":
+        return EFFORT_LEVELS.index(raw), fast
+    return None, fast
+
+
 # ── Main ──────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="Claude Counter statusline")
@@ -627,7 +673,9 @@ def main():
     )
     parser.add_argument(
         "--effort-icons", default="arrows",
-        help="Effort indicator preset (arrows, bubbles, bars) or 4 custom icons comma-separated (e.g. '↓,→,↑,⇑')",
+        help="Effort indicator preset (arrows, circles, bubbles, style) or custom "
+             "icons comma-separated, one per tier low→ultracode "
+             "(e.g. '○,◐,●,◉,◈,✦'); fewer icons clamp to the last",
     )
     args = parser.parse_args()
 
@@ -690,26 +738,23 @@ def main():
     model_name = model_data.get("display_name") or ""
     if model_name:
         effort_indicator = ""
-        try:
-            with open(CLAUDE_SETTINGS_FILE, "r") as f:
-                effort = json.load(f).get("effortLevel", "")
-            if effort and effort != "default":
-                levels = {"low": 0, "medium": 1, "high": 2, "max": 3}
-                idx = levels.get(effort)
-                if idx is not None:
-                    preset = args.effort_icons
-                    if preset == "style":
-                        filled, empty = BAR_STYLES.get(args.style, ("●", "○"))[:2]
-                        n = idx + 1
-                        effort_indicator = f"{EFFORT_COLORS[idx]}{filled * n}{DIM}{empty * (4 - n)}{RESET} "
-                    else:
-                        icons = EFFORT_PRESETS.get(preset)
-                        if icons is None:
-                            custom = preset.split(",")
-                            icons = tuple(custom[:4]) if len(custom) >= 4 else EFFORT_PRESETS["arrows"]
-                        effort_indicator = f"{EFFORT_COLORS[idx]}{icons[idx]}{RESET} "
-        except (OSError, json.JSONDecodeError):
-            pass
+        idx, fast = read_effort_state()
+        if idx is not None:
+            color = EFFORT_COLORS[idx]
+            preset = args.effort_icons
+            n_levels = len(EFFORT_LEVELS)
+            if preset == "style":
+                filled, empty = BAR_STYLES.get(args.style, ("●", "○"))[:2]
+                n = idx + 1
+                glyph = f"{filled * n}{DIM}{empty * (n_levels - n)}"
+            else:
+                glyphs = EFFORT_PRESETS.get(preset)
+                if glyphs is None:
+                    custom = [g for g in preset.split(",") if g]
+                    glyphs = tuple(custom) if custom else EFFORT_PRESETS["arrows"]
+                glyph = glyphs[min(idx, len(glyphs) - 1)]  # clamp: never blank
+            fast_suffix = f"{FAST_COLOR}{FAST_ICON}{RESET}" if fast else ""
+            effort_indicator = f"{color}{glyph}{RESET}{fast_suffix} "
         parts.append(f"{effort_indicator}{MAGENTA}{model_name}{RESET}")
 
     # ── Token count + progress bar + cache (grouped) ──────────────
