@@ -16,9 +16,11 @@ import calendar
 import glob as globmod
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
@@ -28,6 +30,8 @@ CLAUDE_SETTINGS_FILE = os.path.expanduser("~/.claude/settings.json")
 COST_STATE_FILE = os.path.expanduser("~/.claude/.claude-counter-cost-state.json")
 PRICING_CACHE_FILE = os.path.expanduser("~/.claude/.claude-counter-pricing-cache.json")
 PRICING_CACHE_TTL = 86400  # 24 hours
+PRICING_REFRESH_STAMP_FILE = os.path.expanduser("~/.claude/.claude-counter-pricing-refresh")
+PRICING_REFRESH_BACKOFF = 3600  # cap background refresh attempts to once/hour
 
 # ANSI escape helpers
 RESET = "\033[0m"
@@ -115,6 +119,95 @@ def _load_pricing():
 API_PRICING = _load_pricing()
 
 
+# ── Terminal-safety helpers ───────────────────────────────────────────
+# Output is captured by Claude Code and re-laid-out by its TUI renderer, so
+# everything we emit must be a single line of printable text plus SGR color
+# codes — no control characters, and a width we can keep within COLUMNS.
+
+# C0 controls, DEL, and C1 controls. Any of these in externally-sourced text
+# (git branch, directory, model name) would corrupt the rendered status line.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+# Self-contained SGR colour sequence (the only escape we ever emit).
+_SGR_RE = re.compile(r"\033\[[0-9;]*m")
+
+
+def _sanitize(s):
+    """Strip control characters from text that came from outside the script."""
+    if not s:
+        return s
+    return _CONTROL_CHARS.sub("", s)
+
+
+def _display_width(ch):
+    """Columns a character occupies, matching Claude Code's width counter.
+
+    Mirrors the `string-width` semantics Claude Code (Ink) uses: East-Asian
+    Wide/Fullwidth → 2, combining/zero-width → 0, everything else (including
+    Ambiguous) → 1. Matching its count is what keeps our line and its redraw
+    in sync.
+    """
+    if ch in ("‍", "️") or unicodedata.combining(ch):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def _iter_cells(s):
+    """Yield (chunk, is_escape): whole SGR sequences as escapes, else one char."""
+    i, n = 0, len(s)
+    while i < n:
+        if s[i] == "\033":
+            m = _SGR_RE.match(s, i)
+            if m:
+                yield s[i:m.end()], True
+                i = m.end()
+            else:
+                # Bare ESC should never occur; drop it rather than emit it raw.
+                yield "", True
+                i += 1
+            continue
+        yield s[i], False
+        i += 1
+
+
+def _visible_width(s):
+    return sum(_display_width(ch) for ch, esc in _iter_cells(s) if not esc)
+
+
+def _truncate_to_width(s, max_width):
+    """Cut to at most max_width visible columns without splitting an escape."""
+    out, width = [], 0
+    for chunk, esc in _iter_cells(s):
+        if esc:
+            out.append(chunk)
+            continue
+        w = _display_width(chunk)
+        if width + w > max_width:
+            return "".join(out), True
+        out.append(chunk)
+        width += w
+    return "".join(out), False
+
+
+def _bound_to_columns(line):
+    """Truncate the rendered line to the width Claude Code reports via COLUMNS.
+
+    Recent Claude Code sets COLUMNS for the statusline subprocess. Bounding the
+    line here makes an over-long status truncate predictably (with an ellipsis)
+    instead of wrapping onto a second row — wrapping is what aggravates known
+    redraw/scrollback-bleed bugs on wide panes. No-op when COLUMNS is unset or
+    not a positive integer, so behaviour is unchanged on older versions.
+    """
+    cols = os.environ.get("COLUMNS", "")
+    if not cols.isdigit():
+        return line
+    max_width = int(cols)
+    if max_width <= 0 or _visible_width(line) <= max_width:
+        return line
+    text, _ = _truncate_to_width(line, max(0, max_width - 1))
+    return f"{text}{RESET}…"
+
+
 # ── Formatting ────────────────────────────────────────────────────────
 def fmt_tokens(n):
     if n >= 1_000_000:
@@ -146,7 +239,7 @@ def fmt_dir(cwd):
     home = os.environ.get("HOME", "")
     if home and cwd.startswith(home):
         cwd = "~" + cwd[len(home):]
-    return os.path.basename(cwd) or cwd
+    return _sanitize(os.path.basename(cwd) or cwd)
 
 
 def fmt_reset(resets_at):
@@ -185,7 +278,7 @@ def get_git_branch(cwd):
             cwd=cwd, capture_output=True, text=True, timeout=2,
         )
         if result.returncode == 0:
-            return result.stdout.strip()
+            return _sanitize(result.stdout.strip())
     except (OSError, subprocess.TimeoutExpired):
         pass
     return None
@@ -217,7 +310,7 @@ def get_git_worktree(cwd):
             if os.path.basename(repo_dir) == ".git":
                 repo_dir = os.path.dirname(repo_dir)
             repo_name = os.path.basename(repo_dir)
-            return worktree_name, repo_name
+            return _sanitize(worktree_name), _sanitize(repo_name)
     except (OSError, subprocess.TimeoutExpired):
         pass
     return None, None
@@ -414,6 +507,50 @@ TRANSCRIPT_DIR = os.path.expanduser("~/.claude/projects")
 LITELLM_PRICING_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 
 
+def _pricing_cache_fresh():
+    """True if the pricing cache exists and is within its 24h TTL (no network)."""
+    try:
+        with open(PRICING_CACHE_FILE) as f:
+            cache = json.load(f)
+        return (time.time() - cache.get("_cached_at", 0)) < PRICING_CACHE_TTL
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return False
+
+
+def _maybe_spawn_pricing_refresh():
+    """Refresh pricing off the render path — never block on the network.
+
+    The status line runs on every assistant turn, so it must not make a
+    synchronous network call: the previous inline urllib fetch could stall a
+    render for the socket timeout, and if the cache write ever failed it would
+    retry on *every* render. Here we only stat local files, throttle attempts
+    to once per hour, and hand the actual fetch to a detached child process
+    that updates the cache for subsequent renders.
+    """
+    if _pricing_cache_fresh():
+        return
+    now = time.time()
+    try:
+        if now - os.path.getmtime(PRICING_REFRESH_STAMP_FILE) < PRICING_REFRESH_BACKOFF:
+            return  # attempted recently — back off whether or not it succeeded
+    except OSError:
+        pass  # no stamp yet → proceed
+    try:
+        os.makedirs(os.path.dirname(PRICING_REFRESH_STAMP_FILE), exist_ok=True)
+        with open(PRICING_REFRESH_STAMP_FILE, "w") as f:
+            f.write(str(now))
+    except OSError:
+        pass
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "claude_counter.statusline", "--refresh-pricing"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, start_new_session=True,
+        )
+    except OSError:
+        pass
+
+
 def fetch_and_update_pricing(force=False):
     """Fetch latest pricing from LiteLLM and cache locally.
 
@@ -442,7 +579,7 @@ def fetch_and_update_pricing(force=False):
 
     # Map model patterns to LiteLLM keys
     model_map = {
-        "opus": "claude-opus-4-6",
+        "opus": "claude-opus-4-8",
         "sonnet": "claude-sonnet-4-6",
         "haiku": "claude-haiku-4-5-20251001",
     }
@@ -668,6 +805,11 @@ def main():
         help="Scan historical transcripts to backfill cost data, then exit",
     )
     parser.add_argument(
+        # Internal: invoked as a detached child to refresh pricing off the
+        # render path. Not meant to be called by users.
+        "--refresh-pricing", action="store_true", help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--billing-day", type=int, default=None,
         help="Day of month billing resets (default: 1)",
     )
@@ -696,9 +838,15 @@ def main():
         print(f"Done: {sessions} sessions, ~{fmt_cost(total)} billing period total", file=sys.stderr)
         return
 
-    # Auto-refresh pricing if cache is stale (24h TTL, non-blocking)
+    # ── Pricing refresh worker (detached child, no statusline output) ──
+    if args.refresh_pricing:
+        fetch_and_update_pricing(force=True)
+        return
+
+    # Auto-refresh pricing if cache is stale (24h TTL) — off the render path,
+    # so a slow or failing network never blocks/garbles the status line.
     if not args.no_cost:
-        fetch_and_update_pricing()
+        _maybe_spawn_pricing_refresh()
 
     sep_char = args.separator or STYLE_SEPARATORS.get(args.style, "·")
     sep = f" {GRAY}{sep_char}{RESET} "
@@ -735,7 +883,7 @@ def main():
         parts.append(git_part)
 
     # ── Model + reasoning effort ────────────────────────────────
-    model_name = model_data.get("display_name") or ""
+    model_name = _sanitize(model_data.get("display_name") or "")
     if model_name:
         effort_indicator = ""
         idx, fast = read_effort_state()
@@ -832,7 +980,7 @@ def main():
     if not args.no_cost and not args.no_total and billing_cost > 0:
         parts.append(f"{DIM}~{fmt_cost(billing_cost)}/mo{RESET}")
 
-    print(sep.join(parts))
+    print(_bound_to_columns(sep.join(parts)))
 
 
 if __name__ == "__main__":

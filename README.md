@@ -110,9 +110,15 @@ Estimated API cost shows what the current session's token usage would cost on th
 
 ### Pricing
 
-Model pricing is fetched automatically from [LiteLLM](https://github.com/BerriAI/litellm) and cached in `~/.claude/.claude-counter-pricing-cache.json` (refreshed every 24 hours).
+Model pricing is fetched automatically from [LiteLLM](https://github.com/BerriAI/litellm) and cached in `~/.claude/.claude-counter-pricing-cache.json` (refreshed every 24 hours). The refresh runs in a **detached background process** — the status line itself never makes a blocking network call, so a slow or failing network can't stall or garble rendering. (Attempts are throttled to once per hour and tracked in `~/.claude/.claude-counter-pricing-refresh`.)
 
 Rate limit utilization (session 5h and weekly 7d) is read from the native `rate_limits` field provided by Claude Code ≥2.1.80. If the field is absent (older versions), usage bars are simply not shown.
+
+### Terminal rendering
+
+The status line is built to be safe for Claude Code's TUI renderer: it emits a **single line** of plain text plus SGR colour codes only — no cursor-movement, screen-clear, OSC, or other escape sequences. Externally-sourced text (git branch, directory, model name) is stripped of control characters before display, and the whole line is truncated to the terminal width Claude Code reports via `COLUMNS` (with an `…` ellipsis) so it never wraps onto a second row. The default `arrows` effort preset and the geometric bar glyphs are width-safe; the `bubbles` preset and the `⚡` fastMode suffix use full-width emoji, whose rendered width some terminals measure differently.
+
+> If you still see garbled/duplicated status lines, it's most likely a Claude Code renderer issue rather than this script — try updating Claude Code, setting `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, or `/clear`.
 
 ## Credits
 
