@@ -94,6 +94,7 @@ STYLE_SEPARATORS = {
 
 # Hardcoded fallback — only used if LiteLLM fetch has never succeeded
 FALLBACK_PRICING = {
+    "fable":  (10.0, 50.0),
     "opus":   (5.0, 25.0),
     "sonnet": (3.0, 15.0),
     "haiku":  (1.0, 5.0),
@@ -102,18 +103,18 @@ FALLBACK_PRICING = {
 
 def _load_pricing():
     """Load pricing from cache file, falling back to hardcoded defaults."""
+    # Start from the fallback so models added in a new release are priced even
+    # when an older cache file (without them) is still present; cache overrides.
+    pricing = dict(FALLBACK_PRICING)
     try:
         with open(PRICING_CACHE_FILE) as f:
             cache = json.load(f)
-        pricing = {}
         for model, prices in cache.get("pricing", {}).items():
             if isinstance(prices, list) and len(prices) == 2:
                 pricing[model] = (float(prices[0]), float(prices[1]))
-        if pricing:
-            return pricing
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         pass
-    return dict(FALLBACK_PRICING)
+    return pricing
 
 
 API_PRICING = _load_pricing()
@@ -579,6 +580,7 @@ def fetch_and_update_pricing(force=False):
 
     # Map model patterns to LiteLLM keys
     model_map = {
+        "fable": "claude-fable-5",
         "opus": "claude-opus-4-8",
         "sonnet": "claude-sonnet-4-6",
         "haiku": "claude-haiku-4-5-20251001",
