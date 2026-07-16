@@ -16,6 +16,7 @@ Claude Counter is a Claude Code statusline script that displays:
 - Token count with progress bar (6 styles) + cache status
 - Daily cost bar (1d) with configurable budget
 - Weekly cost bar (7d) with configurable budget
+- Estimated water footprint (session + billing period)
 
 Single Python package, no external dependencies. Installable directly from git via `uvx` or `pipx`.
 
@@ -39,6 +40,7 @@ Single Python package, no external dependencies. Installable directly from git v
 | `--no-usage` | off | Disable rate limit usage bars |
 | `--no-cost` | off | Disable estimated API cost display |
 | `--no-total` | off | Disable billing period total cost display |
+| `--no-water` | off | Disable estimated water footprint display |
 | `--effort-icons` | `arrows` | Effort preset (arrows, bubbles, style) or 4 custom icons comma-separated |
 | `--billing-day` | `1` | Day of month billing resets |
 | `--sync` | off | Scan historical transcripts to backfill cost data, then exit |
@@ -50,6 +52,10 @@ Session (5h) and weekly (7d) utilization is read from the native `rate_limits` f
 ## Cost estimation
 
 Estimated API cost is calculated per-model with cache discounts. Pricing is auto-fetched from LiteLLM and cached in `~/.claude/.claude-counter-pricing-cache.json` (24h TTL). Cache reads at 10%, writes at 200% of input price (1-hour caching used by Claude Code). Per-session costs are accumulated in `~/.claude/.claude-counter-cost-state.json` — 5h totals, 7d totals, and billing period total (resets on `--billing-day`, default 1st).
+
+## Water footprint
+
+Estimated liters of water per session and billing period (`💧` segment, `--no-water` to disable). Equation: `water = energy × (WUE_onsite/PUE + WUE_offsite) ≈ energy × 3.4 L/kWh`. Energy per token is anchored on the measured Claude Sonnet figure from arXiv:2505.09598 (0.22 Wh/1k input, 2.2 Wh/1k output), scaled per Anthropic tier by relative API input price; cache reads discounted 10% like cost. Per-session water is stored in `billing_water` in the cost state; `--sync` backfills it.
 
 ## Historical sync
 

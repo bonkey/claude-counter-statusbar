@@ -56,6 +56,25 @@ CACHE_READ_FACTOR = 0.10
 CACHE_WRITE_FACTOR = 2.0
 BILLING_DAY = 1  # default, overridable via --billing-day
 
+# ── Water footprint model ─────────────────────────────────────────────
+# water = energy × (WUE_onsite / PUE + WUE_offsite)
+# (Li et al. 2023 arXiv:2304.03271; "How Hungry is AI?" arXiv:2505.09598).
+# Onsite = data-center cooling (~0.30 L/kWh hyperscaler avg, PUE ~1.12);
+# offsite = water evaporated generating the electricity (~3.14 L/kWh US
+# grid) — offsite dominates. Google's Gemini disclosure counts onsite
+# only, which is why its per-prompt figure is ~10× lower.
+WATER_L_PER_KWH = 0.30 / 1.12 + 3.142  # ≈ 3.41
+
+# Inference energy per token, anchored on the measured Claude Sonnet
+# figure from arXiv:2505.09598 (~5.5 Wh per 10k-input/1.5k-output query,
+# assuming decode ≈ 10× prefill per token). Other Anthropic tiers are
+# scaled by relative API input price as a rough compute-size proxy.
+# Cache reads skip prefill compute → same discount as the cost model.
+WATER_WH_PER_1K_INPUT = 0.22
+WATER_WH_PER_1K_OUTPUT = 2.2
+WATER_BASELINE_INPUT_PRICE = 3.0  # $/MTok of the Sonnet-class anchor
+WATER_ICON = "💧"
+
 BAR_STYLES = {
     "bar":    ("█", "░", None, None),
     "ball":   ("─", "─", None, "●"),
@@ -226,6 +245,19 @@ def fmt_cost(usd):
     if usd > 0:
         return f"${usd:.3f}"
     return "$0.00"
+
+
+def fmt_water(liters):
+    ml = liters * 1000
+    if ml <= 0:
+        return "0mL"
+    if ml < 1000:
+        return f"{max(1, round(ml))}mL"
+    if liters < 100:
+        return f"{liters:.1f}L"
+    if liters < 1000:
+        return f"{liters:.0f}L"
+    return f"{liters / 1000:.1f}kL"
 
 
 def fmt_pct(pct):
@@ -411,6 +443,30 @@ def estimate_api_cost(model_name, total_input, total_output, cache_read, cache_c
     return cost
 
 
+def estimate_water_liters(model_name, total_input, total_output, cache_read, cache_creation):
+    """Estimate liters of water consumed by this session's inference.
+
+    Per-token energy (Sonnet-class anchor, price-scaled per tier) times
+    data-center water intensity (onsite cooling + offsite electricity
+    generation). An order-of-magnitude estimate — see README for sources.
+    """
+    name_lower = (model_name or "").lower()
+    input_price = None
+    for key, (inp, _out) in API_PRICING.items():
+        if key in name_lower:
+            input_price = inp
+            break
+    scale = (input_price / WATER_BASELINE_INPUT_PRICE) if input_price else 1.0
+
+    plain_input = max(0, total_input - cache_read - cache_creation)
+    energy_wh = scale * (
+        ((plain_input + cache_creation) / 1000) * WATER_WH_PER_1K_INPUT
+        + (cache_read / 1000) * WATER_WH_PER_1K_INPUT * CACHE_READ_FACTOR
+        + (total_output / 1000) * WATER_WH_PER_1K_OUTPUT
+    )
+    return (energy_wh / 1000) * WATER_L_PER_KWH
+
+
 def usage_segment(label, pct, resets_at, style_name, cost=None):
     pct_s = fmt_pct(pct)
     reset_s = fmt_reset(resets_at)
@@ -480,8 +536,13 @@ def _save_cost_state(state):
         pass
 
 
-def update_accumulated_costs(session_id, session_cost):
-    """Track per-session costs for the billing period. Returns billing_cost."""
+def update_accumulated_costs(session_id, session_cost=None, session_water=None):
+    """Track per-session cost/water for the billing period.
+
+    A None value leaves that metric's stored entry untouched (so e.g.
+    --no-cost doesn't overwrite a synced cost with 0).
+    Returns (billing_cost, billing_water).
+    """
     state = _load_cost_state()
 
     # Check if billing period rolled over → re-sync from transcripts
@@ -492,15 +553,21 @@ def update_accumulated_costs(session_id, session_cost):
             state = _load_cost_state()
         except Exception:
             state["billing_sessions"] = {}
+            state["billing_water"] = {}
             state["billing_period"] = current_period
 
     billing_sessions = state.get("billing_sessions", {})
-    billing_sessions[session_id] = session_cost
+    billing_water = state.get("billing_water", {})
+    if session_cost is not None:
+        billing_sessions[session_id] = session_cost
+    if session_water is not None:
+        billing_water[session_id] = session_water
     state["billing_sessions"] = billing_sessions
+    state["billing_water"] = billing_water
 
     _save_cost_state(state)
 
-    return sum(billing_sessions.values())
+    return sum(billing_sessions.values()), sum(billing_water.values())
 
 
 # ── Historical transcript sync ───────────────────────────────────────
@@ -625,10 +692,22 @@ def _estimate_cost_from_usage(usage, model_str):
     return estimate_api_cost(model_str, input_tokens, output_tokens, cache_read, cache_creation)
 
 
+def _estimate_water_from_usage(usage, model_str):
+    """Calculate water from a single assistant message's usage dict."""
+    input_tokens = usage.get("input_tokens", 0)
+    output_tokens = usage.get("output_tokens", 0)
+    cache_read = usage.get("cache_read_input_tokens", 0)
+    cache_creation = usage.get("cache_creation_input_tokens", 0)
+    # Transcript usage reports plain input separately from cache tokens,
+    # unlike the statusline's total_input which includes them.
+    total_input = input_tokens + cache_read + cache_creation
+    return estimate_water_liters(model_str, total_input, output_tokens, cache_read, cache_creation)
+
+
 def sync_historical_costs():
     """Scan transcript files and backfill cost state.
 
-    Returns (sessions_found, total_cost).
+    Returns (sessions_found, total_cost, total_water).
     """
     billing_period = _billing_period_key()
     now = datetime.now(timezone.utc)
@@ -696,12 +775,15 @@ def sync_historical_costs():
         except OSError:
             continue
 
-    # Sum costs per session from deduplicated requests
+    # Sum costs/water per session from deduplicated requests
     session_costs = {}
+    session_water = {}
     for req in requests.values():
         sid = req["sessionId"]
         cost = _estimate_cost_from_usage(req["usage"], req["model"])
         session_costs[sid] = session_costs.get(sid, 0.0) + cost
+        water = _estimate_water_from_usage(req["usage"], req["model"])
+        session_water[sid] = session_water.get(sid, 0.0) + water
 
     # Now bucket sessions into windows based on their latest timestamp
     state = _load_cost_state()
@@ -709,6 +791,7 @@ def sync_historical_costs():
     five_hour_sessions = {}
     seven_day_sessions = {}
     billing_sessions = {}
+    billing_water = {}
 
     for sid, cost in session_costs.items():
         ts_str = session_timestamps.get(sid, "")
@@ -723,6 +806,7 @@ def sync_historical_costs():
 
         if ts_epoch >= billing_cutoff:
             billing_sessions[sid] = cost
+            billing_water[sid] = session_water.get(sid, 0.0)
         if ts_epoch >= seven_day_cutoff:
             seven_day_sessions[sid] = cost
         if ts_epoch >= five_hour_cutoff:
@@ -732,13 +816,14 @@ def sync_historical_costs():
     state["five_hour_sessions"] = five_hour_sessions
     state["seven_day_sessions"] = seven_day_sessions
     state["billing_sessions"] = billing_sessions
+    state["billing_water"] = billing_water
     state["billing_period"] = billing_period
     state["synced_at"] = time.time()
 
     _save_cost_state(state)
 
     total = sum(billing_sessions.values())
-    return len(session_costs), total
+    return len(session_costs), total, sum(billing_water.values())
 
 
 
@@ -803,6 +888,10 @@ def main():
         help="Disable billing period total cost display",
     )
     parser.add_argument(
+        "--no-water", action="store_true",
+        help="Disable estimated water footprint display",
+    )
+    parser.add_argument(
         "--sync", action="store_true",
         help="Scan historical transcripts to backfill cost data, then exit",
     )
@@ -836,8 +925,11 @@ def main():
         else:
             print("  Using cached pricing (fetch failed or unchanged)", file=sys.stderr)
         print(f"Scanning transcripts in {TRANSCRIPT_DIR}…", file=sys.stderr)
-        sessions, total = sync_historical_costs()
-        print(f"Done: {sessions} sessions, ~{fmt_cost(total)} billing period total", file=sys.stderr)
+        sessions, total, water = sync_historical_costs()
+        print(
+            f"Done: {sessions} sessions, ~{fmt_cost(total)} / {WATER_ICON}{fmt_water(water)} billing period total",
+            file=sys.stderr,
+        )
         return
 
     # ── Pricing refresh worker (detached child, no statusline output) ──
@@ -935,6 +1027,16 @@ def main():
         if session_api_cost > 0:
             cost_str = f" {DIM}~{fmt_cost(session_api_cost)}{RESET}"
 
+    # Estimated water footprint (grouped with token bar, no separator)
+    water_str = ""
+    session_water = 0.0
+    if not args.no_water:
+        session_water = estimate_water_liters(
+            model_name, total_input, total_output, cache_read, cache_creation,
+        )
+        if session_water > 0:
+            water_str = f" {DIM}{WATER_ICON}{fmt_water(session_water)}{RESET}"
+
     if context_size >= 1_000_000:
         ctx_size_label = f"{context_size // 1_000_000}M"
     elif context_size >= 1_000:
@@ -943,23 +1045,26 @@ def main():
         ctx_size_label = str(context_size)
     ctx_size_str = f"/{ctx_size_label}"
     if args.style == "text":
-        parts.append(f"ctx ~{fmt_tokens(total_tokens)} {pct_str}{ctx_size_str}{cost_str}")
+        parts.append(f"ctx ~{fmt_tokens(total_tokens)} {pct_str}{ctx_size_str}{cost_str}{water_str}")
     else:
         bar = progress_bar(used_pct, args.style)
-        parts.append(f"ctx {bar} {pct_str}{ctx_size_str}{cost_str}")
+        parts.append(f"ctx {bar} {pct_str}{ctx_size_str}{cost_str}{water_str}")
 
     # ── Rate limit usage (session + weekly) ─────────────────────
     # Read from native rate_limits field (Claude Code ≥2.1.80)
     billing_cost = 0.0
+    billing_water = 0.0
 
     rate_limits = data.get("rate_limits") or {}
     five_hour = rate_limits.get("five_hour") or {}
     seven_day = rate_limits.get("seven_day") or {}
 
-    # Accumulate billing cost (independent of rate_limits presence)
+    # Accumulate billing cost/water (independent of rate_limits presence)
     session_id = data.get("session_id") or ""
-    if not args.no_cost and session_id and session_api_cost > 0:
-        billing_cost = update_accumulated_costs(session_id, session_api_cost)
+    cost_upd = session_api_cost if not args.no_cost and session_api_cost > 0 else None
+    water_upd = session_water if not args.no_water and session_water > 0 else None
+    if session_id and (cost_upd is not None or water_upd is not None):
+        billing_cost, billing_water = update_accumulated_costs(session_id, cost_upd, water_upd)
 
     if five_hour or seven_day:
         session_pct = five_hour.get("used_percentage", 0)
@@ -978,9 +1083,15 @@ def main():
                     "7d", weekly_pct, weekly_reset, args.style,
                 ))
 
-    # ── Billing period total cost ────────────────────────────
-    if not args.no_cost and not args.no_total and billing_cost > 0:
-        parts.append(f"{DIM}~{fmt_cost(billing_cost)}/mo{RESET}")
+    # ── Billing period totals (cost + water) ──────────────────
+    if not args.no_total:
+        totals = []
+        if not args.no_cost and billing_cost > 0:
+            totals.append(f"~{fmt_cost(billing_cost)}/mo")
+        if not args.no_water and billing_water > 0:
+            totals.append(f"{WATER_ICON}{fmt_water(billing_water)}/mo")
+        if totals:
+            parts.append(f"{DIM}{' '.join(totals)}{RESET}")
 
     print(_bound_to_columns(sep.join(parts)))
 
