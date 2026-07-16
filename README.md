@@ -2,6 +2,8 @@
 
 A statusline for [Claude Code](https://claude.ai/code) showing token usage, cost, and real rate limit utilization.
 
+![Claude Counter statusline demo](docs/statusbar-demo.png)
+
 ## Features
 
 - **Current directory + model + reasoning effort** — At-a-glance context (read from `~/.claude/settings.json`, configurable icon presets)
