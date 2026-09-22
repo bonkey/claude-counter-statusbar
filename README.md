@@ -110,7 +110,7 @@ Claude Code sends JSON via stdin after each assistant message. The script reads 
 
 Run `claude-counter --sync` to backfill historical costs from Claude Code transcripts (`~/.claude/projects/*/*.jsonl`). It also fetches the latest model pricing from [LiteLLM](https://github.com/BerriAI/litellm). Scans all sessions in the current billing period (deduplicated by request ID) and populates the cost state, including the accumulated water footprint. After that, costs accumulate automatically on each statusline update. Run periodically to keep pricing current.
 
-Estimated API cost shows what the current session's token usage would cost on the Anthropic API, with per-model pricing (Opus/Sonnet/Haiku) and cache discounts (reads at 10%, writes at 125% of input price). Costs are accumulated across sessions in `~/.claude/.claude-counter-cost-state.json` — daily totals shown on the 5h bar, weekly totals on the 7d bar (auto-prunes after 7 days). Pricing source: [she-llac.com/claude-limits](https://she-llac.com/claude-limits).
+Estimated API cost shows what the current session's token usage would cost on the Anthropic API, with per-model pricing (Fable/Opus/Sonnet/Haiku) and cache discounts (reads at 10%, writes at 200% of input price for Claude Code's 1-hour caching). Costs are accumulated across sessions in `~/.claude/.claude-counter-cost-state.json` — daily totals shown on the 5h bar, weekly totals on the 7d bar (auto-prunes after 7 days). Pricing source: [she-llac.com/claude-limits](https://she-llac.com/claude-limits).
 
 ### Water footprint
 
@@ -124,7 +124,7 @@ The `💧` segment estimates how many liters of water your token usage consumes,
 | Cache read | 0.022 Wh / 1k | skips prefill — same 10% factor the cost estimate uses |
 | Output | 2.2 Wh / 1k | sequential decode, ~10× prefill per token |
 
-Those are Sonnet-class rates. Other Anthropic tiers are scaled by their API input price relative to Sonnet's $3/MTok, as a rough proxy for model compute: Haiku ⅓×, Opus 1.67×, Fable 3.33×.
+Those are Sonnet-class rates. Each model is scaled by its API input price relative to the measured Sonnet's $3/MTok, as a rough proxy for model compute: Haiku ⅓×, Sonnet 5 ⅔×, Opus 5.5 1.33×, Fable 3.33×.
 
 **Step 2 — energy → water.** Data centers consume water in two places, added up per the standard academic model ([Li et al. 2023](https://arxiv.org/pdf/2304.03271)):
 
@@ -136,7 +136,7 @@ water = energy × (WUE_onsite / PUE + WUE_offsite)
 - `WUE_onsite` = 0.30 L/kWh — water evaporated by the data center's own cooling towers, per unit of *total facility* energy. Dividing by `PUE` = 1.12 (power usage effectiveness, facility energy ÷ server energy) converts it to per-server-energy terms.
 - `WUE_offsite` = 3.14 L/kWh — water evaporated generating the electricity itself (hydro reservoirs, thermal plant cooling; US grid average). This term dominates ~12:1.
 
-**Worked example** — a Fable 5 session with 10k plain input, 20k cache-write, 120k cache-read, and 20k output tokens:
+**Worked example** — a Fable 5.1 session with 10k plain input, 20k cache-write, 120k cache-read, and 20k output tokens:
 
 ```
 energy = 3.33 × (10 × 0.22  +  20 × 0.22  +  120 × 0.022  +  20 × 2.2)   [Fable scale × Wh]
