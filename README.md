@@ -9,12 +9,13 @@ A statusline for [Claude Code](https://claude.ai/code) showing token usage, cost
 - **Current directory + model + reasoning effort** — At-a-glance context (read from `~/.claude/settings.json`, configurable icon presets)
 - **Git branch + worktree** — On by default (shows `[worktree-name]` when in a linked worktree; `--no-git` to disable)
 - **Token progress bar** — Context usage with color-coded warnings (blue → yellow → red)
+- **Colored percentages** — Shaded green → orange → red as usage grows (`--no-pct-color` to disable)
 - **Estimated API cost** — What this session would cost on the Anthropic API (per-model pricing with cache discounts)
 - **Water footprint** — Estimated liters of water your tokens consume (data-center cooling + electricity generation), per session and per billing period
 - **Session usage bar (5h)** — Rolling 5-hour rate limit utilization with reset countdown + accumulated API cost
 - **Weekly usage bar (7d)** — Rolling 7-day rate limit utilization with reset countdown + accumulated API cost
 - **Billing period total** — Accumulated cost for the current billing cycle (resets on configurable billing day)
-- **6 bar styles** — `dots` (default), `text`, `bar`, `ball`, `capped`, `filled`
+- **6 bar styles** — `dots` (default), `text`, `bar`, `ball`, `capped`, `filled`, or `off` for no bars
 - **Style-matched separators** — Separator character matches the bar style (overridable)
 
 ## Installation
@@ -45,10 +46,14 @@ Or with `pipx`:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--style` | `dots` | Bar style: `text`, `bar`, `ball`, `capped`, `dots`, `filled` |
+| `--style` | `dots` | Bar style: `text`, `bar`, `ball`, `capped`, `dots`, `filled`, `off` |
 | `--separator` | *(matches style)* | Separator character between segments |
 | `--git` / `--no-git` | on | Show current git branch |
 | `--no-usage` | off | Disable rate limit usage bars |
+| `--no-5h` | off | Disable the 5-hour session limit segment |
+| `--no-7d` | off | Disable the 7-day weekly limit segment |
+| `--percent` / `--no-percent` | on | Show usage percentages |
+| `--pct-color` / `--no-pct-color` | on | Color percentages green (≤50%) → orange (≤80%) → red |
 | `--no-cost` | off | Disable estimated API cost display |
 | `--no-total` | off | Disable billing period total cost display |
 | `--no-water` | off | Disable estimated water footprint display |
@@ -77,6 +82,7 @@ Example with all options:
 | `capped` | `━━╸┄┄` | `━` |
 | `filled` | `■■□□□` | `■` |
 | `text` | `~19.0k 40%` | `●` |
+| `off` | `40%` (no bar) | `●` |
 
 ### Effort icon presets
 

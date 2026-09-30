@@ -13,7 +13,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Claude Counter is a Claude Code statusline script that displays:
 - Current directory and model name
 - Git branch + worktree name (on by default, `--no-git` to disable)
-- Token count with progress bar (6 styles) + cache status
+- Token count with progress bar (6 styles, or `off`) + cache status
+- Percentages shaded green → orange → red (`--no-pct-color` to disable)
 - Daily cost bar (1d) with configurable budget
 - Weekly cost bar (7d) with configurable budget
 - Estimated water footprint (session + billing period)
@@ -34,10 +35,14 @@ Single Python package, no external dependencies. Installable directly from git v
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--style` | `dots` | Bar style: text, bar, ball, capped, dots, filled |
+| `--style` | `dots` | Bar style: text, bar, ball, capped, dots, filled, off |
 | `--separator` | (matches style) | Separator character between segments |
 | `--git` / `--no-git` | on | Show current git branch |
 | `--no-usage` | off | Disable rate limit usage bars |
+| `--no-5h` | off | Disable 5-hour session limit segment |
+| `--no-7d` | off | Disable 7-day weekly limit segment |
+| `--percent` / `--no-percent` | on | Show usage percentages |
+| `--pct-color` / `--no-pct-color` | on | Color percentages green (≤50%) → orange (≤80%) → red |
 | `--no-cost` | off | Disable estimated API cost display |
 | `--no-total` | off | Disable billing period total cost display |
 | `--no-water` | off | Disable estimated water footprint display |
@@ -84,6 +89,7 @@ Only processes files modified within the current billing period. Run periodicall
 - `capped`: `━━╸┄┄` separator `━`
 - `filled`: `■■□□□` separator `■`
 - `text`: `~19.0k 40%` separator `●`
+- `off`: `40%` (no bar) separator `●`
 
 ## Version Bumping
 

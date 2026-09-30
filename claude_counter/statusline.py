@@ -7,7 +7,8 @@ status line with token usage, cache status, rate limit utilization, model, and c
 Usage:
   claude-counter [--style=STYLE] [--no-git] [--no-usage] [--no-cost] [--no-total]
 
-Styles (from claude-powerline): text, bar, ball, capped, dots (default), filled
+Styles (from claude-powerline): text, bar, ball, capped, dots (default), filled,
+plus off (no bars).
 Separator auto-matches the bar style (override with --separator).
 """
 
@@ -109,7 +110,18 @@ STYLE_SEPARATORS = {
     "capped": "━",
     "dots":   "●",
     "filled": "■",
+    "off":    "●",
 }
+
+# Percentage color stops (pct, rgb): green up to 50, orange by 80, red above.
+# Colors in between are interpolated in truecolor.
+PCT_COLOR_STOPS = (
+    (0,   (80, 200, 80)),
+    (50,  (150, 200, 60)),
+    (65,  (220, 190, 50)),
+    (80,  (240, 140, 40)),
+    (95,  (220, 60, 60)),
+)
 
 # Hardcoded fallback — only used if LiteLLM fetch has never succeeded
 FALLBACK_PRICING = {
@@ -260,12 +272,22 @@ def fmt_water(liters):
     return f"{liters / 1000:.1f}kL"
 
 
-def fmt_pct(pct):
-    if pct >= CRIT_PCT:
-        return f"{RED}{BOLD}{pct:.0f}%{RESET}"
-    if pct >= WARN_PCT:
-        return f"{YELLOW}{pct:.0f}%{RESET}"
-    return f"{pct:.0f}%"
+def pct_color(pct):
+    """Truecolor escape for pct, interpolated between PCT_COLOR_STOPS."""
+    lo_pct, lo_rgb = PCT_COLOR_STOPS[0]
+    for hi_pct, hi_rgb in PCT_COLOR_STOPS:
+        if pct <= hi_pct:
+            t = (pct - lo_pct) / (hi_pct - lo_pct) if hi_pct > lo_pct else 0.0
+            return _truecolor_fg(*_lerp_rgb(lo_rgb, hi_rgb, t))
+        lo_pct, lo_rgb = hi_pct, hi_rgb
+    return _truecolor_fg(*lo_rgb)
+
+
+def fmt_pct(pct, color=True):
+    if not color:
+        return f"{pct:.0f}%"
+    bold = BOLD if pct >= CRIT_PCT else ""
+    return f"{pct_color(pct)}{bold}{pct:.0f}%{RESET}"
 
 
 def fmt_dir(cwd):
@@ -467,15 +489,13 @@ def estimate_water_liters(model_name, total_input, total_output, cache_read, cac
     return (energy_wh / 1000) * WATER_L_PER_KWH
 
 
-def usage_segment(label, pct, resets_at, style_name, cost=None):
-    pct_s = fmt_pct(pct)
+def usage_segment(label, pct, resets_at, style_name, cost=None, show_pct=True, color=True):
+    pct_part = f" {fmt_pct(pct, color)}" if show_pct else ""
     reset_s = fmt_reset(resets_at)
     reset_part = f" {DIM}{reset_s}{RESET}" if reset_s else ""
     cost_part = f" {DIM}~{fmt_cost(cost)}{RESET}" if cost and cost > 0 else ""
-    if style_name == "text":
-        return f"{label} {pct_s}{reset_part}{cost_part}"
-    bar = progress_bar(pct, style_name)
-    return f"{label} {bar} {pct_s}{reset_part}{cost_part}"
+    bar_part = "" if style_name in ("text", "off") else f" {progress_bar(pct, style_name)}"
+    return f"{label}{bar_part}{pct_part}{reset_part}{cost_part}"
 
 
 # ── Billing period helpers ────────────────────────────────────────────
@@ -649,7 +669,7 @@ def fetch_and_update_pricing(force=False):
     model_map = {
         "fable": "claude-fable-5-1",
         "opus": "claude-opus-5-5",
-        "sonnet": "claude-sonnet-5",
+        "sonnet": "claude-sonnet-5-5",
         "haiku": "claude-haiku-4-5-20251001",
     }
 
@@ -863,9 +883,9 @@ def main():
     parser = argparse.ArgumentParser(description="Claude Counter statusline")
     parser.add_argument(
         "--style",
-        choices=["text", "bar", "ball", "capped", "dots", "filled"],
+        choices=["text", "bar", "ball", "capped", "dots", "filled", "off"],
         default="dots",
-        help="Progress bar style (default: dots)",
+        help="Progress bar style, 'off' hides bars (default: dots)",
     )
     parser.add_argument(
         "--separator", type=str, default=None,
@@ -878,6 +898,22 @@ def main():
     parser.add_argument(
         "--no-usage", action="store_true",
         help="Disable rate limit usage bars",
+    )
+    parser.add_argument(
+        "--no-5h", action="store_true",
+        help="Disable 5-hour session limit segment",
+    )
+    parser.add_argument(
+        "--no-7d", action="store_true",
+        help="Disable 7-day weekly limit segment",
+    )
+    parser.add_argument(
+        "--percent", action=argparse.BooleanOptionalAction, default=True,
+        help="Show usage percentages (default: on)",
+    )
+    parser.add_argument(
+        "--pct-color", action=argparse.BooleanOptionalAction, default=True,
+        help="Color percentages green → orange → red (default: on)",
     )
     parser.add_argument(
         "--no-cost", action="store_true",
@@ -1010,7 +1046,7 @@ def main():
     used_pct = used_pct or 0
 
     total_tokens = total_input + total_output
-    pct_str = fmt_pct(used_pct)
+    pct_str = fmt_pct(used_pct, args.pct_color)
 
     # Cache info (appended to token segment, no separator)
     current = ctx.get("current_usage") or {}
@@ -1043,12 +1079,14 @@ def main():
         ctx_size_label = f"{context_size // 1_000}k"
     else:
         ctx_size_label = str(context_size)
-    ctx_size_str = f"/{ctx_size_label}"
+    pct_part = f" {pct_str}/{ctx_size_label}" if args.percent else ""
     if args.style == "text":
-        parts.append(f"ctx ~{fmt_tokens(total_tokens)} {pct_str}{ctx_size_str}{cost_str}{water_str}")
+        parts.append(f"ctx ~{fmt_tokens(total_tokens)}{pct_part}{cost_str}{water_str}")
+    elif args.style == "off":
+        parts.append(f"ctx{pct_part}{cost_str}{water_str}")
     else:
         bar = progress_bar(used_pct, args.style)
-        parts.append(f"ctx {bar} {pct_str}{ctx_size_str}{cost_str}{water_str}")
+        parts.append(f"ctx {bar}{pct_part}{cost_str}{water_str}")
 
     # ── Rate limit usage (session + weekly) ─────────────────────
     # Read from native rate_limits field (Claude Code ≥2.1.80)
@@ -1074,13 +1112,15 @@ def main():
 
         # Usage bars
         if not args.no_usage:
-            if session_pct is not None:
+            if session_pct is not None and not args.no_5h:
                 parts.append(usage_segment(
                     "5h", session_pct, session_reset, args.style,
+                    show_pct=args.percent, color=args.pct_color,
                 ))
-            if weekly_pct is not None:
+            if weekly_pct is not None and not args.no_7d:
                 parts.append(usage_segment(
                     "7d", weekly_pct, weekly_reset, args.style,
+                    show_pct=args.percent, color=args.pct_color,
                 ))
 
     # ── Billing period totals (cost + water) ──────────────────
