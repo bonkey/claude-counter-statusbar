@@ -339,8 +339,21 @@ def get_git_branch(cwd):
     return None
 
 
+def get_git_short_sha(cwd):
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=cwd, capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0:
+            return _sanitize(result.stdout.strip())
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
 def get_git_worktree(cwd):
-    """Return (worktree_name, repo_name) if cwd is inside a linked worktree, else (None, None)."""
+    """Return (worktree folder name, repo_name) if cwd is inside a linked worktree, else (None, None)."""
     try:
         # Get the common .git dir (bare repo or main worktree's .git)
         common = subprocess.run(
@@ -358,7 +371,13 @@ def get_git_worktree(cwd):
         current_dir = os.path.realpath(current.stdout.strip())
         # If they differ, we're in a linked worktree
         if common_dir != current_dir:
-            worktree_name = os.path.basename(current_dir)
+            # The gitdir file points at <worktree>/.git and follows `git worktree move`.
+            # The admin dir keeps the name the worktree was created with.
+            try:
+                with open(os.path.join(current_dir, "gitdir")) as f:
+                    worktree_name = os.path.basename(os.path.dirname(f.read().strip()))
+            except OSError:
+                worktree_name = os.path.basename(current_dir)
             # Repo name: common_dir is <repo>/.git or <repo>/.git/worktrees/..
             # For a regular repo, common_dir ends with .git
             repo_dir = common_dir
@@ -995,22 +1014,28 @@ def main():
     # ── Current directory + Git branch/worktree ───────────────────
     cwd = (data.get("workspace") or {}).get("current_dir") or data.get("cwd") or ""
     dir_name = fmt_dir(cwd) if cwd else ""
+    # Session name from /rename or --name, else the AI-generated title
+    session_name = _sanitize(data.get("session_name"))
     git_part = ""
     if args.git and cwd:
         branch = get_git_branch(cwd)
         if branch:
             worktree_name, repo_name = get_git_worktree(cwd)
-            if worktree_name:
-                # In a worktree: show repo name as dir, ⎇ worktree name
-                if repo_name:
-                    dir_name = repo_name
-                git_part = f"{DIM}⎇ {worktree_name}{RESET}"
-            else:
+            # In a worktree: show repo name as dir
+            if worktree_name and repo_name:
+                dir_name = repo_name
+            # A worktree folder is named <repo>.<branch> with "/" as "-" (worktrunk),
+            # so its branch shows only when it differs or no session name names the task.
+            if branch == "HEAD":
+                git_part = f"{ORANGE} {get_git_short_sha(cwd) or branch}{RESET}"
+            elif not worktree_name:
+                git_part = f"{DIM} {branch}{RESET}"
+            elif not worktree_name.endswith(branch.replace("/", "-")):
+                git_part = f"{ORANGE} {branch}{RESET}"
+            elif not session_name:
                 git_part = f"{DIM} {branch}{RESET}"
     if dir_name:
         badge = f"\033[1;7;96m {dir_name} {RESET}"
-        # Session name from /rename or --name, else the AI-generated title
-        session_name = _sanitize(data.get("session_name"))
         if session_name:
             badge += f" \033[1;7;95m {session_name} {RESET}"
         parts.append(badge)

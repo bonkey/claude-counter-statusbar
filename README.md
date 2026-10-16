@@ -8,7 +8,11 @@ A statusline for [Claude Code](https://claude.ai/code) showing token usage, cost
 
 - **Current directory + model + reasoning effort** — At-a-glance context (read from `~/.claude/settings.json`, configurable icon presets)
 - **Session name** — Shown next to the directory when the session has a name (`/rename`, `--name`) or an AI-generated title
-- **Git branch + worktree** — On by default (shows `[worktree-name]` when in a linked worktree; `--no-git` to disable)
+- **Git branch** — On by default, shown only when the line does not already imply it (`--no-git` to disable):
+  - Main checkout: always, dimmed
+  - Linked worktree whose folder ends with the branch (`<repo>.<branch>`, `/` as `-`, as worktrunk names it): only while the session has no name
+  - Linked worktree on another branch: in orange
+  - Detached HEAD: the short commit hash, in orange
 - **Token progress bar** — Context usage with color-coded warnings (blue → yellow → red)
 - **Colored percentages** — Shaded green → orange → red as usage grows (`--no-pct-color` to disable)
 - **Estimated API cost** — What this session would cost on the Anthropic API (per-model pricing with cache discounts)

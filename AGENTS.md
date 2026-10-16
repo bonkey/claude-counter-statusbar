@@ -13,7 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Claude Counter is a Claude Code statusline script that displays:
 - Current directory and model name
 - Session name next to the directory, when Claude Code reports one
-- Git branch + worktree name (on by default, `--no-git` to disable)
+- Git branch when the line does not already imply it: main checkout, a worktree whose folder names another branch (orange), detached HEAD (orange hash), or no session name (on by default, `--no-git` to disable)
 - Token count with progress bar (6 styles, or `off`) + cache status
 - Percentages shaded green → orange → red (`--no-pct-color` to disable)
 - Daily cost bar (1d) with configurable budget
