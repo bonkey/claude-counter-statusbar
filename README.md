@@ -7,6 +7,7 @@ A statusline for [Claude Code](https://claude.ai/code) showing token usage, cost
 ## Features
 
 - **Current directory + model + reasoning effort** — At-a-glance context (read from `~/.claude/settings.json`, configurable icon presets)
+- **Session name** — Shown next to the directory when the session has a name (`/rename`, `--name`) or an AI-generated title
 - **Git branch + worktree** — On by default (shows `[worktree-name]` when in a linked worktree; `--no-git` to disable)
 - **Token progress bar** — Context usage with color-coded warnings (blue → yellow → red)
 - **Colored percentages** — Shaded green → orange → red as usage grows (`--no-pct-color` to disable)
@@ -162,7 +163,7 @@ Rate limit utilization (session 5h and weekly 7d) is read from the native `rate_
 
 ### Terminal rendering
 
-The status line is built to be safe for Claude Code's TUI renderer: it emits a **single line** of plain text plus SGR colour codes only — no cursor-movement, screen-clear, OSC, or other escape sequences. Externally-sourced text (git branch, directory, model name) is stripped of control characters before display, and the whole line is truncated to the terminal width Claude Code reports via `COLUMNS` (with an `…` ellipsis) so it never wraps onto a second row. The default `arrows` effort preset and the geometric bar glyphs are width-safe; the `bubbles` preset, the `⚡` fastMode suffix, and the `💧` water indicator use full-width emoji, whose rendered width some terminals measure differently.
+The status line is built to be safe for Claude Code's TUI renderer: it emits a **single line** of plain text plus SGR colour codes only — no cursor-movement, screen-clear, OSC, or other escape sequences. Externally-sourced text (git branch, directory, session name, model name) is stripped of control characters before display, and the whole line is truncated to the terminal width Claude Code reports via `COLUMNS` (with an `…` ellipsis) so it never wraps onto a second row. The default `arrows` effort preset and the geometric bar glyphs are width-safe; the `bubbles` preset, the `⚡` fastMode suffix, and the `💧` water indicator use full-width emoji, whose rendered width some terminals measure differently.
 
 > If you still see garbled/duplicated status lines, it's most likely a Claude Code renderer issue rather than this script — try updating Claude Code, setting `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, or `/clear`.
 

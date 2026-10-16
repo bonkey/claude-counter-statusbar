@@ -1008,7 +1008,12 @@ def main():
             else:
                 git_part = f"{DIM} {branch}{RESET}"
     if dir_name:
-        parts.append(f"\033[1;7;96m {dir_name} {RESET}")
+        badge = f"\033[1;7;96m {dir_name} {RESET}"
+        # Session name from /rename or --name, else the AI-generated title
+        session_name = _sanitize(data.get("session_name"))
+        if session_name:
+            badge += f" \033[1;7;95m {session_name} {RESET}"
+        parts.append(badge)
     if git_part:
         parts.append(git_part)
 
