@@ -20,7 +20,7 @@ Claude Counter is a Claude Code statusline script that displays:
 - Weekly cost bar (7d) with configurable budget
 - Estimated water footprint (session + billing period)
 
-Single Python package, no external dependencies. Installable directly from git via `uvx` or `pipx`.
+Single Python package, no external dependencies. Installable directly from git via `uv tool install` or `pipx install`.
 
 ## Architecture
 
@@ -30,7 +30,7 @@ Single Python package, no external dependencies. Installable directly from git v
 
 **`pyproject.toml`** — Package metadata. Console script entry point: `claude-counter` → `claude_counter.statusline:main`.
 
-**`install.sh`** — Convenience script to add statusline config to `~/.claude/settings.json`.
+**`install.sh`** — Convenience script to install the tool with `uv tool install` and add statusline config to `~/.claude/settings.json`.
 
 ## CLI Options
 
@@ -73,14 +73,20 @@ Only processes files modified within the current billing period. Run periodicall
 
 ## Install pattern
 
+```bash
+uv tool install git+https://github.com/bonkey/claude-counter-statusbar
+```
+
 ```json
 {
   "statusLine": {
     "type": "command",
-    "command": "uvx --from git+https://github.com/bonkey/claude-counter-statusbar claude-counter --style=dots"
+    "command": "claude-counter --style=dots"
   }
 }
 ```
+
+Update with `uv tool upgrade claude-counter`. Do not use `uvx --from git+…` as the status line command: uv then runs a `git fetch` against GitHub on every refresh.
 
 ## Bar styles (credit: Owloops/claude-powerline)
 
@@ -97,6 +103,8 @@ Only processes files modified within the current billing period. Run periodicall
 Update both locations:
 1. `pyproject.toml` — `version` field
 2. `claude_counter/__init__.py` — `__version__`
+
+On each push to `main`, `.github/workflows/release.yml` creates the GitHub release `v<version>` if it does not exist yet. mise installs from these releases. The workflow fails when `claude_counter/` changed without a version bump.
 
 ## Testing
 

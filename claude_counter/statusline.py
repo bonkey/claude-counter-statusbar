@@ -128,7 +128,7 @@ FALLBACK_PRICING = {
     "fable":  (10.0, 50.0),
     "opus":   (4.0, 20.0),
     "sonnet": (2.0, 10.0),
-    "haiku":  (1.0, 5.0),
+    "haiku":  (0.1, 0.5),
 }
 
 
@@ -689,7 +689,7 @@ def fetch_and_update_pricing(force=False):
         "fable": "claude-fable-5-1",
         "opus": "claude-opus-5-5",
         "sonnet": "claude-sonnet-5-5",
-        "haiku": "claude-haiku-4-5-20251001",
+        "haiku": "claude-haiku-5-5",
     }
 
     updated = {}

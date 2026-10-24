@@ -25,27 +25,41 @@ A statusline for [Claude Code](https://claude.ai/code) showing token usage, cost
 
 ## Installation
 
-Add to `~/.claude/settings.json`:
+Install the tool once with `uv`:
 
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "uvx --from git+https://github.com/bonkey/claude-counter-statusbar claude-counter"
-  }
-}
+```bash
+uv tool install git+https://github.com/bonkey/claude-counter-statusbar
 ```
 
 Or with `pipx`:
 
+```bash
+pipx install git+https://github.com/bonkey/claude-counter-statusbar
+```
+
+Or with `mise`, which installs from GitHub releases:
+
+```toml
+[tools]
+"pipx:bonkey/claude-counter-statusbar" = "latest"
+```
+
+Then add to `~/.claude/settings.json`:
+
 ```json
 {
   "statusLine": {
     "type": "command",
-    "command": "pipx run --spec git+https://github.com/bonkey/claude-counter-statusbar claude-counter"
+    "command": "claude-counter"
   }
 }
 ```
+
+If Claude Code cannot find `claude-counter`, use its full path. `uv tool dir --bin` prints the directory, usually `~/.local/bin`.
+
+To update, run `uv tool upgrade claude-counter`, `pipx upgrade claude-counter` or `mise upgrade`.
+
+Do not put `uvx --from git+…` in the status line command. uv then fetches the repository from GitHub on every status line refresh, in every open session.
 
 ### Options
 
@@ -72,7 +86,7 @@ Example with all options:
 {
   "statusLine": {
     "type": "command",
-    "command": "uvx --from git+https://github.com/bonkey/claude-counter-statusbar claude-counter --style=dots"
+    "command": "claude-counter --style=dots"
   }
 }
 ```

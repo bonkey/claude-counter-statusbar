@@ -2,13 +2,13 @@
 # Install Claude Counter statusline for Claude Code.
 #
 # Usage:
-#   ./install.sh          # Install and configure
+#   ./install.sh          # Install the tool with uv and configure
 #   ./install.sh --remove # Remove configuration
 
 set -euo pipefail
 
 SETTINGS_FILE="$HOME/.claude/settings.json"
-COMMAND="uvx --from git+https://github.com/bonkey/claude-counter-statusbar claude-counter"
+SOURCE="git+https://github.com/bonkey/claude-counter-statusbar"
 
 if [[ "${1:-}" == "--remove" ]]; then
     if [[ -f "$SETTINGS_FILE" ]]; then
@@ -27,8 +27,12 @@ with open('$tmp', 'w') as f:
     else
         echo "No settings file found at $SETTINGS_FILE"
     fi
+    echo "Uninstall the tool with: uv tool uninstall claude-counter"
     exit 0
 fi
+
+uv tool install "$SOURCE"
+COMMAND="$(uv tool dir --bin)/claude-counter"
 
 mkdir -p "$(dirname "$SETTINGS_FILE")"
 
@@ -66,5 +70,6 @@ fi
 
 echo "Claude Counter statusline installed."
 echo "  Config: $SETTINGS_FILE"
+echo "  Update: uv tool upgrade claude-counter"
 echo ""
 echo "Restart Claude Code to see the statusline."
