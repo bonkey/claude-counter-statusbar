@@ -1159,7 +1159,7 @@ def main():
                     "5h", session_pct, session_reset, args.style,
                     show_pct=args.percent, color=args.pct_color,
                 ))
-            if weekly_pct is not None and not args.no_7d:
+            if seven_day and weekly_pct is not None and not args.no_7d:
                 parts.append(usage_segment(
                     "7d", weekly_pct, weekly_reset, args.style,
                     show_pct=args.percent, color=args.pct_color,

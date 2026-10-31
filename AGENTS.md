@@ -54,7 +54,7 @@ Single Python package, no external dependencies. Installable directly from git v
 
 ## Rate limit usage
 
-Session (5h) and weekly (7d) utilization is read from the native `rate_limits` field in Claude Code's stdin JSON (≥2.1.80). If absent, usage bars are not shown. A 7-day window without a 5-hour window hides the 5h segment, or shows `5h ∞` with `--no-hide-absent-5h`: Ultra accounts have no 5-hour limit, and Claude Code also drops the 5-hour window between its reset and the next API response.
+Session (5h) and weekly (7d) utilization is read from the native `rate_limits` field in Claude Code's stdin JSON (≥2.1.80). If absent, usage bars are not shown. A 7-day window without a 5-hour window hides the 5h segment, or shows `5h ∞` with `--no-hide-absent-5h`: Ultra accounts have no 5-hour limit, and Claude Code also drops the 5-hour window between its reset and the next API response. A missing 7-day window hides the 7d segment.
 
 ## Cost estimation
 
