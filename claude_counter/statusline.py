@@ -75,7 +75,7 @@ WATER_WH_PER_1K_INPUT = 0.22
 WATER_WH_PER_1K_OUTPUT = 2.2
 WATER_BASELINE_INPUT_PRICE = 3.0  # $/MTok of the Sonnet-class anchor
 WATER_ICON = "💧"
-COST_ICON = "💵"
+COST_ICON = "💰"
 
 BAR_STYLES = {
     "bar":    ("█", "░", None, None),

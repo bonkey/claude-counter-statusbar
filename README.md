@@ -16,7 +16,7 @@ A statusline for [Claude Code](https://claude.ai/code) showing token usage, cost
   - Detached HEAD: the short commit hash, in orange
 - **Token progress bar** — Context usage with color-coded warnings (blue → yellow → red)
 - **Colored percentages** — Shaded green → orange → red as usage grows (`--no-pct-color` to disable)
-- **Estimated API cost** — What this session would cost on the Anthropic API, as Claude Code estimates it, shown as `💵0.10`
+- **Estimated API cost** — What this session would cost on the Anthropic API, as Claude Code estimates it, shown as `💰0.10`
 - **Water footprint** — Estimated liters of water your tokens consume (data-center cooling + electricity generation) per billing period, computed by `--sync`
 - **Session usage bar (5h)** — Rolling 5-hour rate limit utilization with reset countdown + accumulated API cost. Hidden on Ultra accounts, which have no 5-hour limit, or shown as `5h ∞` with `--no-hide-absent-5h`
 - **Weekly usage bar (7d)** — Rolling 7-day rate limit utilization with reset countdown + accumulated API cost
@@ -186,7 +186,7 @@ Rate limit utilization (session 5h and weekly 7d) is read from the native `rate_
 
 ### Terminal rendering
 
-The status line is built to be safe for Claude Code's TUI renderer: it emits a **single line** of plain text plus SGR colour codes only — no cursor-movement, screen-clear, OSC, or other escape sequences. Externally-sourced text (git branch, directory, session name, model name) is stripped of control characters before display, and the whole line is truncated to the terminal width Claude Code reports via `COLUMNS` (with an `…` ellipsis) so it never wraps onto a second row. The default `arrows` effort preset and the geometric bar glyphs are width-safe; the `bubbles` preset, the `⚡` fastMode suffix, the `💵` cost indicator and the `💧` water indicator use full-width emoji, whose rendered width some terminals measure differently.
+The status line is built to be safe for Claude Code's TUI renderer: it emits a **single line** of plain text plus SGR colour codes only — no cursor-movement, screen-clear, OSC, or other escape sequences. Externally-sourced text (git branch, directory, session name, model name) is stripped of control characters before display, and the whole line is truncated to the terminal width Claude Code reports via `COLUMNS` (with an `…` ellipsis) so it never wraps onto a second row. The default `arrows` effort preset and the geometric bar glyphs are width-safe; the `bubbles` preset, the `⚡` fastMode suffix, the `💰` cost indicator and the `💧` water indicator use full-width emoji, whose rendered width some terminals measure differently.
 
 The default powerline ribbon draws its arrows with the Private Use Area glyphs U+E0B0 and U+E0B1 (one column each). They need a [Nerd Font](https://www.nerdfonts.com/) or a powerline-patched font, or a terminal that draws them itself, such as Ghostty. Other fonts show missing-glyph boxes instead; `--no-powerline` uses plain separator characters. The ribbon sets its own background and text colors, so pick the palette that suits the terminal with `--powerline-theme`. The script runs without access to the terminal and cannot ask it for its background color.
 

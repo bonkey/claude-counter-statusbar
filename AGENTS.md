@@ -62,7 +62,7 @@ Session (5h) and weekly (7d) utilization is read from the native `rate_limits` f
 
 ## Cost estimation
 
-The session cost (`💵` segment) is `cost.total_cost_usd` from Claude Code's stdin JSON. `context_window` token counts describe only the most recent API response, so they cannot price a session. Each session's latest cost is stored in `~/.claude/.claude-counter-cost-state.json` under `billing_sessions`, and their sum is the billing period total (resets on `--billing-day`, default 1st).
+The session cost (`💰` segment) is `cost.total_cost_usd` from Claude Code's stdin JSON. `context_window` token counts describe only the most recent API response, so they cannot price a session. Each session's latest cost is stored in `~/.claude/.claude-counter-cost-state.json` under `billing_sessions`, and their sum is the billing period total (resets on `--billing-day`, default 1st).
 
 `--sync` takes each session's total from the last `cost-state` entry in its main transcript (`totalCostUSD`, written by Claude Code ≥2.1.280 when a session ends). It is the same figure as `cost.total_cost_usd` and includes calls missing from the transcript, such as away summaries and compaction. A session with a `continued-in` entry is skipped when its continuation (`continuedInSessionId`) has a `cost-state`, because the continuation's total includes it.
 
