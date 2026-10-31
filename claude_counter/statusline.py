@@ -54,8 +54,7 @@ BRIGHT_MAGENTA = "\033[95m"
 BAR_WIDTH = 5
 WARN_PCT = 80
 CRIT_PCT = 95
-CACHE_READ_FACTOR = 0.10
-CACHE_WRITE_FACTOR = 2.0
+CACHE_READ_FACTOR = 0.10  # energy of a cache read relative to plain input
 BILLING_DAY = 1  # default, overridable via --billing-day
 
 # ── Water footprint model ─────────────────────────────────────────────
@@ -160,12 +159,14 @@ BAND_MUTED_CONTRAST = 4.0  # reset times, cost, water
 BAND_EMPTY_CONTRAST = 2.5  # empty bar cells
 FRAC_BLEND_RGB = (0, 0, 0)  # the partial bar cell blends from this toward the fill
 
-# Hardcoded fallback — only used if LiteLLM fetch has never succeeded
+# Hardcoded fallback — only used if LiteLLM fetch has never succeeded.
+# USD per MTok: (input, output, cache read, 5-minute cache write, 1-hour cache write).
+# Cache reads cost 0.025× input on Fable, 0.05× on Opus and Sonnet, 0.1× on Haiku.
 FALLBACK_PRICING = {
-    "fable":  (10.0, 50.0),
-    "opus":   (4.0, 20.0),
-    "sonnet": (2.0, 10.0),
-    "haiku":  (0.1, 0.5),
+    "fable":  (10.0, 50.0, 0.25, 12.5, 20.0),
+    "opus":   (4.0, 20.0, 0.2, 5.0, 8.0),
+    "sonnet": (2.0, 10.0, 0.1, 2.5, 4.0),
+    "haiku":  (0.1, 0.5, 0.01, 0.125, 0.2),
 }
 
 
@@ -178,8 +179,8 @@ def _load_pricing():
         with open(PRICING_CACHE_FILE) as f:
             cache = json.load(f)
         for model, prices in cache.get("pricing", {}).items():
-            if isinstance(prices, list) and len(prices) == 2:
-                pricing[model] = (float(prices[0]), float(prices[1]))
+            if isinstance(prices, list) and len(prices) == 5:
+                pricing[model] = tuple(float(p) for p in prices)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         pass
     return pricing
@@ -524,31 +525,6 @@ def progress_bar(pct, style_name, width=BAR_WIDTH):
 
 
 
-def estimate_api_cost(model_name, total_input, total_output, cache_read, cache_creation):
-    """Estimate what this session would cost on the Anthropic API."""
-    model_key = None
-    name_lower = (model_name or "").lower()
-    for key in API_PRICING:
-        if key in name_lower:
-            model_key = key
-            break
-    if not model_key:
-        model_key = "sonnet"  # fallback
-
-    input_per_m, output_per_m = API_PRICING[model_key]
-
-    # Non-cached input = total_input - cache_read - cache_creation
-    plain_input = max(0, total_input - cache_read - cache_creation)
-
-    cost = (
-        (plain_input / 1_000_000) * input_per_m
-        + (cache_read / 1_000_000) * input_per_m * CACHE_READ_FACTOR
-        + (cache_creation / 1_000_000) * input_per_m * CACHE_WRITE_FACTOR
-        + (total_output / 1_000_000) * output_per_m
-    )
-    return cost
-
-
 def estimate_water_liters(model_name, total_input, total_output, cache_read, cache_creation):
     """Estimate liters of water consumed by this session's inference.
 
@@ -558,9 +534,9 @@ def estimate_water_liters(model_name, total_input, total_output, cache_read, cac
     """
     name_lower = (model_name or "").lower()
     input_price = None
-    for key, (inp, _out) in API_PRICING.items():
+    for key, rates in API_PRICING.items():
         if key in name_lower:
-            input_price = inp
+            input_price = rates[0]
             break
     scale = (input_price / WATER_BASELINE_INPUT_PRICE) if input_price else 1.0
 
@@ -720,11 +696,11 @@ def _save_cost_state(state):
         pass
 
 
-def update_accumulated_costs(session_id, session_cost=None, session_water=None):
-    """Track per-session cost/water for the billing period.
+def update_accumulated_costs(session_id, session_cost=None):
+    """Record the session's cost and return the billing period totals.
 
-    A None value leaves that metric's stored entry untouched (so e.g.
-    --no-cost doesn't overwrite a synced cost with 0).
+    A None cost leaves the stored entry untouched. Water comes only from
+    --sync, because Claude Code reports no per-session token totals.
     Returns (billing_cost, billing_water).
     """
     state = _load_cost_state()
@@ -744,8 +720,6 @@ def update_accumulated_costs(session_id, session_cost=None, session_water=None):
     billing_water = state.get("billing_water", {})
     if session_cost is not None:
         billing_sessions[session_id] = session_cost
-    if session_water is not None:
-        billing_water[session_id] = session_water
     state["billing_sessions"] = billing_sessions
     state["billing_water"] = billing_water
 
@@ -807,8 +781,7 @@ def fetch_and_update_pricing(force=False):
     """Fetch latest pricing from LiteLLM and cache locally.
 
     Cached for 24h. Pass force=True to skip TTL check (used by --sync).
-    Uses LiteLLM for base input/output prices. Cache write factor is kept
-    from config (default 2.0x for 1-hour caching used by Claude Code).
+    A model is updated only when LiteLLM lists all five of its rates.
     """
     global API_PRICING
 
@@ -837,16 +810,21 @@ def fetch_and_update_pricing(force=False):
         "haiku": "claude-haiku-5-5",
     }
 
+    # Same order as FALLBACK_PRICING
+    fields = (
+        "input_cost_per_token",
+        "output_cost_per_token",
+        "cache_read_input_token_cost",
+        "cache_creation_input_token_cost",
+        "cache_creation_input_token_cost_above_1hr",
+    )
     updated = {}
     for our_key, litellm_key in model_map.items():
-        model_data = data.get(litellm_key)
-        if not model_data:
-            continue
-        inp = model_data.get("input_cost_per_token", 0)
-        out = model_data.get("output_cost_per_token", 0)
-        if inp > 0 and out > 0:
+        model_data = data.get(litellm_key) or {}
+        rates = [model_data.get(field) or 0 for field in fields]
+        if all(rate > 0 for rate in rates):
             # Convert per-token to per-M
-            updated[our_key] = [round(inp * 1_000_000, 2), round(out * 1_000_000, 2)]
+            updated[our_key] = [round(rate * 1_000_000, 6) for rate in rates]
 
     if not updated:
         return False
@@ -862,18 +840,36 @@ def fetch_and_update_pricing(force=False):
 
     # Update in-memory pricing
     for key, prices in updated.items():
-        API_PRICING[key] = (prices[0], prices[1])
+        API_PRICING[key] = tuple(prices)
 
     return True
 
 
 def _estimate_cost_from_usage(usage, model_str):
     """Calculate cost from a single assistant message's usage dict."""
-    input_tokens = usage.get("input_tokens", 0)
-    output_tokens = usage.get("output_tokens", 0)
-    cache_read = usage.get("cache_read_input_tokens", 0)
+    name_lower = (model_str or "").lower()
+    model_key = next((key for key in API_PRICING if key in name_lower), "sonnet")
+    inp, out, read, write_5m, write_1h = API_PRICING[model_key]
     cache_creation = usage.get("cache_creation_input_tokens", 0)
-    return estimate_api_cost(model_str, input_tokens, output_tokens, cache_read, cache_creation)
+    # Cache writes not reported as 5-minute are priced as 1-hour, the
+    # duration Claude Code uses for the main conversation.
+    tokens_5m = (usage.get("cache_creation") or {}).get("ephemeral_5m_input_tokens", 0)
+    cost = (
+        usage.get("input_tokens", 0) * inp
+        + usage.get("output_tokens", 0) * out
+        + usage.get("cache_read_input_tokens", 0) * read
+        + tokens_5m * write_5m
+        + (cache_creation - tokens_5m) * write_1h
+    ) / 1_000_000
+    return cost + sum(_estimate_cost_from_usage(it, it.get("model")) for it in _advisor_usages(usage))
+
+
+def _advisor_usages(usage):
+    """Advisor calls made within a request, each with its own model.
+
+    The request's top-level usage counts only its "message" iterations.
+    """
+    return [it for it in usage.get("iterations") or [] if it.get("type") == "advisor_message"]
 
 
 def _estimate_water_from_usage(usage, model_str):
@@ -882,10 +878,11 @@ def _estimate_water_from_usage(usage, model_str):
     output_tokens = usage.get("output_tokens", 0)
     cache_read = usage.get("cache_read_input_tokens", 0)
     cache_creation = usage.get("cache_creation_input_tokens", 0)
-    # Transcript usage reports plain input separately from cache tokens,
-    # unlike the statusline's total_input which includes them.
+    # Transcript usage reports plain input separately from cache tokens;
+    # estimate_water_liters takes an input total that includes them.
     total_input = input_tokens + cache_read + cache_creation
-    return estimate_water_liters(model_str, total_input, output_tokens, cache_read, cache_creation)
+    water = estimate_water_liters(model_str, total_input, output_tokens, cache_read, cache_creation)
+    return water + sum(_estimate_water_from_usage(it, it.get("model")) for it in _advisor_usages(usage))
 
 
 def sync_historical_costs():
@@ -902,9 +899,11 @@ def sync_historical_costs():
     seven_day_cutoff = now.timestamp() - 7 * 86400
     billing_cutoff = period_start.timestamp()
 
-    # Find all transcript files — only check files modified since billing start
-    pattern = os.path.join(TRANSCRIPT_DIR, "*", "*.jsonl")
-    files = globmod.glob(pattern)
+    # Find all transcript files — only check files modified since billing start.
+    # Subagent transcripts carry their parent session's sessionId.
+    files = globmod.glob(os.path.join(TRANSCRIPT_DIR, "*", "*.jsonl")) + globmod.glob(
+        os.path.join(TRANSCRIPT_DIR, "*", "*", "subagents", "*.jsonl")
+    )
 
     # Deduplicate by requestId — Claude Code logs streaming updates,
     # so the same API call appears multiple times. Keep the last (largest) entry.
@@ -1255,30 +1254,11 @@ def main():
     total_tokens = total_input + total_output
     pct_str = fmt_pct(used_pct, args.pct_color)
 
-    # Cache info (appended to token segment, no separator)
-    current = ctx.get("current_usage") or {}
-    cache_read = current.get("cache_read_input_tokens") or 0
-    cache_creation = current.get("cache_creation_input_tokens") or 0
-
-    # Estimated API cost (grouped with token bar, no separator)
+    # Session cost as Claude Code estimates it (grouped with token bar, no separator)
     cost_str = ""
-    session_api_cost = 0.0
-    if not args.no_cost:
-        session_api_cost = estimate_api_cost(
-            model_name, total_input, total_output, cache_read, cache_creation,
-        )
-        if session_api_cost > 0:
-            cost_str = f" {DIM}{fmt_cost(session_api_cost)}{RESET}"
-
-    # Estimated water footprint (grouped with token bar, no separator)
-    water_str = ""
-    session_water = 0.0
-    if not args.no_water:
-        session_water = estimate_water_liters(
-            model_name, total_input, total_output, cache_read, cache_creation,
-        )
-        if session_water > 0:
-            water_str = f" {DIM}{WATER_ICON}{fmt_water(session_water)}{RESET}"
+    session_api_cost = (data.get("cost") or {}).get("total_cost_usd") or 0.0
+    if not args.no_cost and session_api_cost > 0:
+        cost_str = f" {DIM}{fmt_cost(session_api_cost)}{RESET}"
 
     if context_size >= 1_000_000:
         ctx_size_label = f"{context_size // 1_000_000}M"
@@ -1288,12 +1268,12 @@ def main():
         ctx_size_label = str(context_size)
     pct_part = f" {pct_str}/{ctx_size_label}" if args.percent else ""
     if args.style == "text":
-        parts.append(f"{fmt_label('ctx')} ~{fmt_tokens(total_tokens)}{pct_part}{cost_str}{water_str}")
+        parts.append(f"{fmt_label('ctx')} ~{fmt_tokens(total_tokens)}{pct_part}{cost_str}")
     elif args.style == "off":
-        parts.append(f"{fmt_label('ctx')}{pct_part}{cost_str}{water_str}")
+        parts.append(f"{fmt_label('ctx')}{pct_part}{cost_str}")
     else:
         bar = progress_bar(used_pct, args.style)
-        parts.append(f"{fmt_label('ctx')} {bar}{pct_part}{cost_str}{water_str}")
+        parts.append(f"{fmt_label('ctx')} {bar}{pct_part}{cost_str}")
 
     # ── Rate limit usage (session + weekly) ─────────────────────
     # Read from native rate_limits field (Claude Code ≥2.1.80)
@@ -1304,12 +1284,11 @@ def main():
     five_hour = rate_limits.get("five_hour") or {}
     seven_day = rate_limits.get("seven_day") or {}
 
-    # Accumulate billing cost/water (independent of rate_limits presence)
+    # Accumulate billing cost (independent of rate_limits presence)
     session_id = data.get("session_id") or ""
     cost_upd = session_api_cost if not args.no_cost and session_api_cost > 0 else None
-    water_upd = session_water if not args.no_water and session_water > 0 else None
-    if session_id and (cost_upd is not None or water_upd is not None):
-        billing_cost, billing_water = update_accumulated_costs(session_id, cost_upd, water_upd)
+    if session_id:
+        billing_cost, billing_water = update_accumulated_costs(session_id, cost_upd)
 
     if five_hour or seven_day:
         session_pct = five_hour.get("used_percentage", 0)

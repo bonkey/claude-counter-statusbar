@@ -16,8 +16,8 @@ A statusline for [Claude Code](https://claude.ai/code) showing token usage, cost
   - Detached HEAD: the short commit hash, in orange
 - **Token progress bar** — Context usage with color-coded warnings (blue → yellow → red)
 - **Colored percentages** — Shaded green → orange → red as usage grows (`--no-pct-color` to disable)
-- **Estimated API cost** — What this session would cost on the Anthropic API (per-model pricing with cache discounts), shown as `💵0.10`
-- **Water footprint** — Estimated liters of water your tokens consume (data-center cooling + electricity generation), per session and per billing period
+- **Estimated API cost** — What this session would cost on the Anthropic API, as Claude Code estimates it, shown as `💵0.10`
+- **Water footprint** — Estimated liters of water your tokens consume (data-center cooling + electricity generation) per billing period, computed by `--sync`
 - **Session usage bar (5h)** — Rolling 5-hour rate limit utilization with reset countdown + accumulated API cost. Hidden on Ultra accounts, which have no 5-hour limit, or shown as `5h ∞` with `--no-hide-absent-5h`
 - **Weekly usage bar (7d)** — Rolling 7-day rate limit utilization with reset countdown + accumulated API cost
 - **Billing period total** — Accumulated cost for the current billing cycle (resets on configurable billing day)
@@ -136,22 +136,22 @@ Then use `"command": "claude-counter"` (with any flags).
 
 ## How it works
 
-Claude Code sends JSON via stdin after each assistant message. The script reads `context_window`, `model`, `workspace`, `rate_limits`, and `session_id` fields and renders a compact status line with ANSI colors. Reasoning effort is resolved like Claude Code's own logic: `ultracode` (from `~/.claude/settings.json`) wins, then the active per-turn effort (the `CLAUDE_EFFORT` env var, which reflects session overrides and can reach `max`), then the persisted `effortLevel` default in settings. `fastMode` from settings is shown as a ⚡ suffix.
+Claude Code sends JSON via stdin after each assistant message. The script reads `context_window`, `cost`, `model`, `workspace`, `rate_limits`, and `session_id` fields and renders a compact status line with ANSI colors. Reasoning effort is resolved like Claude Code's own logic: `ultracode` (from `~/.claude/settings.json`) wins, then the active per-turn effort (the `CLAUDE_EFFORT` env var, which reflects session overrides and can reach `max`), then the persisted `effortLevel` default in settings. `fastMode` from settings is shown as a ⚡ suffix.
 
-Run `claude-counter --sync` to backfill historical costs from Claude Code transcripts (`~/.claude/projects/*/*.jsonl`). It also fetches the latest model pricing from [LiteLLM](https://github.com/BerriAI/litellm). Scans all sessions in the current billing period (deduplicated by request ID) and populates the cost state, including the accumulated water footprint. After that, costs accumulate automatically on each statusline update. Run periodically to keep pricing current.
+Run `claude-counter --sync` to backfill historical costs from Claude Code transcripts (`~/.claude/projects/*/*.jsonl` and their subagent transcripts). It also fetches the latest model pricing from [LiteLLM](https://github.com/BerriAI/litellm). Scans all sessions in the current billing period (deduplicated by request ID) and populates the cost state, including the accumulated water footprint. After that, each status line update records the current session's cost. Water changes only when `--sync` runs. Run it periodically to keep pricing and water current.
 
-Estimated API cost shows what the current session's token usage would cost on the Anthropic API, with per-model pricing (Fable/Opus/Sonnet/Haiku) and cache discounts (reads at 10%, writes at 200% of input price for Claude Code's 1-hour caching). Costs are accumulated across sessions in `~/.claude/.claude-counter-cost-state.json` — daily totals shown on the 5h bar, weekly totals on the 7d bar (auto-prunes after 7 days). Pricing source: [she-llac.com/claude-limits](https://she-llac.com/claude-limits).
+The session cost is `cost.total_cost_usd` from Claude Code, its own estimate at list price. Each session's latest cost is stored in `~/.claude/.claude-counter-cost-state.json`, and their sum is the billing period total (`/mo`). `--sync` prices each transcript request at LiteLLM's rates for the model: input, output, cache reads, and 5-minute or 1-hour cache writes, plus any advisor calls at the advisor's model. Transcripts leave out some requests Claude Code counts, so a synced session usually comes out a few percent below Claude Code's figure.
 
 ### Water footprint
 
-The `💧` segment estimates how many liters of water your token usage consumes, shown per session and accumulated per billing period (`💧1.4kL/mo`). The calculation has two steps: tokens → energy, then energy → water.
+The `💧` segment estimates how many liters of water your token usage consumes, accumulated per billing period (`💧1.4kL/mo`) by `--sync`. The calculation has two steps: tokens → energy, then energy → water.
 
 **Step 1 — tokens → energy.** The energy rates are anchored on the only published *measured* Claude figure: ["How Hungry is AI?" (2025)](https://arxiv.org/html/2505.09598v1) benchmarked Claude Sonnet at ~5.5 Wh for a 10k-input/1.5k-output query. Splitting that between prefill and decode (a decoded token costs roughly 10× a prefilled one — generation is sequential, prompt reading is parallel) gives:
 
 | Token type | Energy | Why |
 |------------|--------|-----|
 | Input (plain or cache write) | 0.22 Wh / 1k | prefill compute |
-| Cache read | 0.022 Wh / 1k | skips prefill — same 10% factor the cost estimate uses |
+| Cache read | 0.022 Wh / 1k | skips prefill — 10% of plain input |
 | Output | 2.2 Wh / 1k | sequential decode, ~10× prefill per token |
 
 Those are Sonnet-class rates. Each model is scaled by its API input price relative to the measured Sonnet's $3/MTok, as a rough proxy for model compute: Haiku ⅓×, Sonnet 5 ⅔×, Opus 5.5 1.33×, Fable 3.33×.
@@ -180,7 +180,7 @@ Treat it as an order-of-magnitude estimate: published figures span ~1000× depen
 
 ### Pricing
 
-Model pricing is fetched automatically from [LiteLLM](https://github.com/BerriAI/litellm) and cached in `~/.claude/.claude-counter-pricing-cache.json` (refreshed every 24 hours). The refresh runs in a **detached background process** — the status line itself never makes a blocking network call, so a slow or failing network can't stall or garble rendering. (Attempts are throttled to once per hour and tracked in `~/.claude/.claude-counter-pricing-refresh`.)
+Model pricing (input, output, cache read, 5-minute and 1-hour cache write) is fetched automatically from [LiteLLM](https://github.com/BerriAI/litellm) and cached in `~/.claude/.claude-counter-pricing-cache.json` (refreshed every 24 hours). The refresh runs in a **detached background process** — the status line itself never makes a blocking network call, so a slow or failing network can't stall or garble rendering. (Attempts are throttled to once per hour and tracked in `~/.claude/.claude-counter-pricing-refresh`.)
 
 Rate limit utilization (session 5h and weekly 7d) is read from the native `rate_limits` field provided by Claude Code ≥2.1.80. If the field is absent (older versions), usage bars are simply not shown. When `rate_limits` has a 7-day window but no 5-hour window, the 5h segment is hidden, or shows `5h ∞` with `--no-hide-absent-5h`. Ultra accounts have no 5-hour limit, so Claude Code sends no 5-hour window for them. Claude Code also drops the 5-hour window between its reset and the next API response, so a Pro or Max account can briefly lose its 5h segment, or show `5h ∞`, after a long idle period. When the 7-day window is missing, the 7d segment is hidden.
 

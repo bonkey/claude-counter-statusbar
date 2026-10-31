@@ -20,7 +20,7 @@ Claude Counter is a Claude Code statusline script that displays:
 - Bold segment labels (`ctx`, `5h`, `7d`)
 - Daily cost bar (1d) with configurable budget
 - Weekly cost bar (7d) with configurable budget
-- Estimated water footprint (session + billing period)
+- Estimated water footprint (billing period, from `--sync`)
 
 Single Python package, no external dependencies. Installable directly from git via `uv tool install` or `pipx install`.
 
@@ -62,17 +62,19 @@ Session (5h) and weekly (7d) utilization is read from the native `rate_limits` f
 
 ## Cost estimation
 
-Estimated API cost (`💵` segment) is calculated per-model with cache discounts. Pricing is auto-fetched from LiteLLM and cached in `~/.claude/.claude-counter-pricing-cache.json` (24h TTL). Cache reads at 10%, writes at 200% of input price (1-hour caching used by Claude Code). Per-session costs are accumulated in `~/.claude/.claude-counter-cost-state.json` — 5h totals, 7d totals, and billing period total (resets on `--billing-day`, default 1st).
+The session cost (`💵` segment) is `cost.total_cost_usd` from Claude Code's stdin JSON. `context_window` token counts describe only the most recent API response, so they cannot price a session. Each session's latest cost is stored in `~/.claude/.claude-counter-cost-state.json` under `billing_sessions`, and their sum is the billing period total (resets on `--billing-day`, default 1st).
+
+`--sync` prices transcripts itself. Pricing is auto-fetched from LiteLLM and cached in `~/.claude/.claude-counter-pricing-cache.json` (24h TTL) as five USD-per-MTok rates per model: input, output, cache read, 5-minute cache write, 1-hour cache write. Cache read rates differ by model (0.025× input on Fable, 0.05× on Opus and Sonnet, 0.1× on Haiku). A request's cache writes are split by `cache_creation.ephemeral_5m_input_tokens`; the rest are priced as 1-hour. Advisor calls appear only in `usage.iterations` (type `advisor_message`, with their own `model`) and are priced at that model.
 
 ## Water footprint
 
-Estimated liters of water per session and billing period (`💧` segment, `--no-water` to disable). Equation: `water = energy × (WUE_onsite/PUE + WUE_offsite) ≈ energy × 3.4 L/kWh`. Energy per token is anchored on the measured Claude Sonnet figure from arXiv:2505.09598 (0.22 Wh/1k input, 2.2 Wh/1k output), scaled per Anthropic tier by relative API input price; cache reads discounted 10% like cost. Per-session water is stored in `billing_water` in the cost state; `--sync` backfills it.
+Estimated liters of water per billing period (`💧` segment, `--no-water` to disable). Equation: `water = energy × (WUE_onsite/PUE + WUE_offsite) ≈ energy × 3.4 L/kWh`. Energy per token is anchored on the measured Claude Sonnet figure from arXiv:2505.09598 (0.22 Wh/1k input, 2.2 Wh/1k output), scaled per Anthropic tier by relative API input price; cache reads at 10% of input energy. Per-session water is stored in `billing_water` in the cost state. Only `--sync` writes it, because Claude Code reports no per-session token totals.
 
 ## Historical sync
 
 `claude-counter --sync` does two things:
-1. **Updates pricing** from LiteLLM's model pricing database (base input/output prices; cache write factor kept at 2.0x for Claude Code's 1-hour caching)
-2. **Scans transcripts** in `~/.claude/projects/*/*.jsonl` to backfill cost data from past sessions (deduplicated by `requestId` to avoid counting streaming updates)
+1. **Updates pricing** from LiteLLM's model pricing database (input, output, cache read, 5-minute and 1-hour cache write rates)
+2. **Scans transcripts** in `~/.claude/projects/*/*.jsonl` and `~/.claude/projects/*/*/subagents/*.jsonl` (subagent transcripts carry the parent `sessionId`) to backfill cost and water from past sessions (deduplicated by `requestId` to avoid counting streaming updates)
 
 Only processes files modified within the current billing period. Run periodically to update pricing and recalculate costs.
 
@@ -116,5 +118,11 @@ On each push to `main`, `.github/workflows/release.yml` creates the GitHub relea
 ## Testing
 
 ```bash
-echo '{"session_id":"test","cwd":"/tmp/myapp","model":{"display_name":"Opus"},"context_window":{"total_input_tokens":15000,"total_output_tokens":4000,"context_window_size":200000,"used_percentage":8,"current_usage":{"cache_read_input_tokens":12000}}}' | python3 -m claude_counter.statusline --style=dots
+python3 -m unittest discover -s tests
+```
+
+The tests point every state, pricing and transcript path at a temporary folder. A manual render writes to `~/.claude/.claude-counter-cost-state.json`, so run it with a throwaway `HOME`:
+
+```bash
+echo '{"session_id":"test","cwd":"/tmp/myapp","model":{"display_name":"Opus"},"cost":{"total_cost_usd":1.23},"context_window":{"total_input_tokens":15000,"total_output_tokens":4000,"context_window_size":200000,"used_percentage":8,"current_usage":{"cache_read_input_tokens":12000}}}' | HOME=$(mktemp -d) python3 -m claude_counter.statusline --style=dots
 ```
