@@ -9,7 +9,8 @@ Usage:
 
 Styles (from claude-powerline): text, bar, ball, capped, dots (default), filled,
 plus off (no bars).
-Separator auto-matches the bar style (override with --separator).
+Segments form a powerline ribbon; with --no-powerline they are joined by a
+separator that matches the bar style (override with --separator).
 """
 
 import argparse
@@ -123,6 +124,41 @@ PCT_COLOR_STOPS = (
     (95,  (220, 60, 60)),
 )
 
+# Powerline: badges first, then a band whose background steps evenly from
+# "light" under the model to "dark" under the last segment.
+POWERLINE_ARROW = "\ue0b0"
+POWERLINE_SOFT_ARROW = "\ue0b1"  # between neighbours on the same background
+# Badge background, and the same color as a foreground for the arrow after it.
+DIR_BADGE = ("\033[106m", "\033[96m")
+SESSION_BADGE = ("\033[105m", "\033[95m")
+# One palette per terminal theme. The terminal's own colors are tuned for its
+# background, so on the band they are replaced with "fg", and the percentages
+# use "pct". Dim text and empty bar cells move toward "ink" until they reach
+# their contrast; the partial bar cell blends from "frac".
+POWERLINE_PALETTES = {
+    "dark": {
+        "light": (80, 87, 106), "dark": (8, 9, 12),
+        "text": (225, 228, 235), "ink": (255, 255, 255), "frac": (120, 125, 140),
+        "pct": ((0, (110, 220, 110)), (50, (170, 220, 90)), (65, (235, 205, 80)),
+                (80, (255, 160, 70)), (95, (255, 130, 130))),
+        "fg": {RED: (255, 140, 140), GREEN: (120, 225, 120), YELLOW: (240, 210, 90),
+               BLUE: (135, 170, 255), MAGENTA: (245, 215, 252), BRIGHT_MAGENTA: (245, 185, 255),
+               LIME: (195, 230, 100), ORANGE: (255, 175, 80), FAST_COLOR: (255, 150, 80)},
+    },
+    "light": {
+        "light": (228, 231, 238), "dark": (166, 172, 187),
+        "text": (30, 33, 42), "ink": (0, 0, 0), "frac": (150, 155, 165),
+        "pct": ((0, (15, 115, 40)), (50, (80, 105, 0)), (65, (125, 85, 0)),
+                (80, (160, 60, 0)), (95, (175, 25, 25))),
+        "fg": {RED: (175, 25, 25), GREEN: (15, 115, 40), YELLOW: (125, 85, 0),
+               BLUE: (25, 85, 195), MAGENTA: (125, 35, 145), BRIGHT_MAGENTA: (145, 35, 165),
+               LIME: (80, 105, 0), ORANGE: (165, 70, 0), FAST_COLOR: (175, 60, 0)},
+    },
+}
+BAND_MUTED_CONTRAST = 4.0  # reset times, cost, water
+BAND_EMPTY_CONTRAST = 2.5  # empty bar cells
+FRAC_BLEND_RGB = (0, 0, 0)  # the partial bar cell blends from this toward the fill
+
 # Hardcoded fallback — only used if LiteLLM fetch has never succeeded
 FALLBACK_PRICING = {
     "fable":  (10.0, 50.0),
@@ -221,6 +257,12 @@ def _truncate_to_width(s, max_width):
     return "".join(out), False
 
 
+def _columns():
+    """The width Claude Code reports via COLUMNS, or None when unset or not positive."""
+    cols = os.environ.get("COLUMNS", "")
+    return int(cols) if cols.isdigit() and int(cols) > 0 else None
+
+
 def _bound_to_columns(line):
     """Truncate the rendered line to the width Claude Code reports via COLUMNS.
 
@@ -230,11 +272,8 @@ def _bound_to_columns(line):
     redraw/scrollback-bleed bugs on wide panes. No-op when COLUMNS is unset or
     not a positive integer, so behaviour is unchanged on older versions.
     """
-    cols = os.environ.get("COLUMNS", "")
-    if not cols.isdigit():
-        return line
-    max_width = int(cols)
-    if max_width <= 0 or _visible_width(line) <= max_width:
+    max_width = _columns()
+    if max_width is None or _visible_width(line) <= max_width:
         return line
     text, _ = _truncate_to_width(line, max(0, max_width - 1))
     return f"{text}{RESET}…"
@@ -403,9 +442,36 @@ def _truecolor_fg(r, g, b):
     return f"\033[38;2;{r};{g};{b}m"
 
 
+def _truecolor_bg(r, g, b):
+    return f"\033[48;2;{r};{g};{b}m"
+
+
 def _lerp_rgb(rgb_a, rgb_b, t):
     """Linear interpolate between two RGB tuples. t=0 → a, t=1 → b."""
     return tuple(int(a + (b - a) * t) for a, b in zip(rgb_a, rgb_b))
+
+
+def _luminance(rgb):
+    """WCAG relative luminance of an sRGB color."""
+    def lin(c):
+        c /= 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (lin(c) for c in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast(a, b):
+    hi, lo = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _lift(bg, ratio, ink):
+    """bg moved toward ink just far enough to reach ratio against bg."""
+    for i in range(101):
+        rgb = _lerp_rgb(bg, ink, i / 100)
+        if _contrast(rgb, bg) >= ratio:
+            return rgb
+    return ink
 
 
 def progress_bar(pct, style_name, width=BAR_WIDTH):
@@ -450,7 +516,7 @@ def progress_bar(pct, style_name, width=BAR_WIDTH):
         # Fractional cell: same filled glyph at a weaker shade of the fill color
         # Blend from 40% to 85% of fill color based on fraction
         alpha = 0.4 + 0.45 * frac_part
-        dimmed = tuple(int(c * alpha) for c in _COLOR_RGB[color_key])
+        dimmed = _lerp_rgb(FRAC_BLEND_RGB, _COLOR_RGB[color_key], alpha)
         frac_cell = f"{_truecolor_fg(*dimmed)}{filled_ch}"
         empty_count -= 1
     else:
@@ -514,7 +580,87 @@ def usage_segment(label, pct, resets_at, style_name, cost=None, show_pct=True, c
     reset_part = f" {DIM}{reset_s}{RESET}" if reset_s else ""
     cost_part = f" {DIM}~{fmt_cost(cost)}{RESET}" if cost and cost > 0 else ""
     bar_part = "" if style_name in ("text", "off") else f" {progress_bar(pct, style_name)}"
-    return f"{label}{bar_part}{pct_part}{reset_part}{cost_part}"
+    return f"{fmt_label(label)}{bar_part}{pct_part}{reset_part}{cost_part}"
+
+
+def fmt_label(label):
+    return f"{BOLD}{label}\033[22m"
+
+
+def powerline_join(parts, badges, start, palette):
+    """Join parts as powerline segments that touch, each padded by one space.
+
+    The first len(badges) parts are badges with their own background. The
+    rest form a band whose background steps evenly from palette["light"] at
+    parts[start] to palette["dark"] at the last part; band parts before start
+    share the lightest step, and a lone part at start takes the darkest. Each
+    arrow takes the current background as its foreground and the next
+    background as its own, and the last one ends on the terminal's default
+    background. A RESET inside a part also clears the background, so the
+    segment's colors are re-applied after each one.
+
+    A line wider than COLUMNS is cut inside a segment, which then ends with
+    "…" and a closing arrow.
+    """
+    if not parts:
+        return ""
+    last = len(parts) - 1
+    segs = []  # (background, same color as foreground, text color, body, soft arrow color)
+    for i, part in enumerate(parts):
+        if i < len(badges):
+            bg, fg = badges[i]
+            segs.append((bg, fg, "\033[30m", f"{BOLD} {part} ", ""))
+            continue
+        t = 0.0 if i < start else (i - start) / (last - start) if last > start else 1.0
+        rgb = _lerp_rgb(palette["light"], palette["dark"], t)
+        bg, fg, text = _truecolor_bg(*rgb), _truecolor_fg(*rgb), _truecolor_fg(*palette["text"])
+        muted = _truecolor_fg(*_lift(rgb, BAND_MUTED_CONTRAST, palette["ink"]))
+        empty = _truecolor_fg(*_lift(rgb, BAND_EMPTY_CONTRAST, palette["ink"]))
+        part = part.replace(RESET, RESET + bg + text).replace(GRAY, empty).replace(DIM, muted)
+        for code, color in palette["fg"].items():
+            part = part.replace(code, _truecolor_fg(*color))
+        segs.append((bg, fg, text, f" {part} ", muted))
+    pieces = []  # (text, segment whose background its last cell is on)
+    for i, (bg, fg, text, body, muted) in enumerate(segs):
+        pieces.append((f"{bg}{text}{body}", i))
+        nxt = segs[i + 1][0] if i < last else ""
+        if nxt == bg:
+            pieces.append((f"{RESET}{bg}{muted}{POWERLINE_SOFT_ARROW}", i))
+        else:
+            pieces.append((f"{RESET}{fg}{nxt}{POWERLINE_ARROW}", i + 1))
+    line = "".join(piece for piece, _ in pieces) + RESET
+    cols = _columns()
+    if cols is None or _visible_width(line) <= cols:
+        return line
+    # Keep room for "…" and the closing arrow.
+    out, room, seg = [], max(0, cols - 2), 0
+    for piece, i in pieces:
+        cut, over = _truncate_to_width(piece, room)
+        if _visible_width(cut):
+            out.append(cut)
+            room -= _visible_width(cut)
+            seg = i
+        if over:
+            break
+    bg, fg, text = segs[seg][:3]
+    return f"{''.join(out)}{bg}{text}…{RESET}{fg}{POWERLINE_ARROW}{RESET}"
+
+
+def powerline_palette(choice):
+    """Palette for --powerline-theme.
+
+    auto follows Claude Code's theme setting when it names one (dark, light,
+    or their -daltonized and -ansi forms). Claude Code's own "auto" follows
+    the terminal, which this script cannot query, so it falls back to dark.
+    """
+    if choice == "auto":
+        try:
+            with open(CLAUDE_SETTINGS_FILE) as f:
+                theme = str(json.load(f).get("theme") or "")
+        except (OSError, json.JSONDecodeError, AttributeError):
+            theme = ""
+        choice = "light" if theme.startswith("light") else "dark"
+    return POWERLINE_PALETTES[choice]
 
 
 # ── Billing period helpers ────────────────────────────────────────────
@@ -907,8 +1053,18 @@ def main():
         help="Progress bar style, 'off' hides bars (default: dots)",
     )
     parser.add_argument(
+        "--powerline", action=argparse.BooleanOptionalAction, default=True,
+        help="Join segments as a powerline ribbon, which needs a Nerd Font "
+             "or a terminal that draws U+E0B0 (default: on)",
+    )
+    parser.add_argument(
+        "--powerline-theme", choices=["auto", "dark", "light"], default="auto",
+        help="Ribbon colors for a dark or light terminal; auto follows Claude "
+             "Code's theme setting when it names one, else dark (default: auto)",
+    )
+    parser.add_argument(
         "--separator", type=str, default=None,
-        help="Separator character (default: matches bar style)",
+        help="Separator character with --no-powerline (default: matches bar style)",
     )
     parser.add_argument(
         "--git", action=argparse.BooleanOptionalAction, default=True,
@@ -1005,6 +1161,12 @@ def main():
 
     sep_char = args.separator or STYLE_SEPARATORS.get(args.style, "·")
     sep = f" {GRAY}{sep_char}{RESET} "
+    if args.powerline:
+        global PCT_COLOR_STOPS, FRAC_BLEND_RGB
+        palette = powerline_palette(args.powerline_theme)
+        PCT_COLOR_STOPS, FRAC_BLEND_RGB = palette["pct"], palette["frac"]
+        # Bars and their partial cell use the palette's colors on the band.
+        _COLOR_RGB.update(blue=palette["fg"][BLUE], yellow=palette["fg"][YELLOW], red=palette["fg"][RED])
 
     try:
         data = json.load(sys.stdin)
@@ -1040,13 +1202,23 @@ def main():
                 git_part = f"{ORANGE} {branch}{RESET}"
             elif not session_name:
                 git_part = f"{DIM} {branch}{RESET}"
-    if dir_name:
+    badges = []
+    if dir_name and args.powerline:
+        parts.append(dir_name)
+        badges.append(DIR_BADGE)
+        if session_name:
+            parts.append(session_name)
+            badges.append(SESSION_BADGE)
+    elif dir_name:
         badge = f"\033[1;7;96m {dir_name} {RESET}"
         if session_name:
             badge += f" \033[1;7;95m {session_name} {RESET}"
         parts.append(badge)
     if git_part:
-        parts.append(git_part)
+        # The space after git_part's color pads it next to a separator; a
+        # powerline segment brings its own padding.
+        parts.append(git_part.replace(" ", "", 1) if args.powerline else git_part)
+    band_start = len(parts)  # lightest step: the model, or what follows if it is missing
 
     # ── Model + reasoning effort ────────────────────────────────
     model_name = _sanitize(model_data.get("display_name") or "")
@@ -1117,12 +1289,12 @@ def main():
         ctx_size_label = str(context_size)
     pct_part = f" {pct_str}/{ctx_size_label}" if args.percent else ""
     if args.style == "text":
-        parts.append(f"ctx ~{fmt_tokens(total_tokens)}{pct_part}{cost_str}{water_str}")
+        parts.append(f"{fmt_label('ctx')} ~{fmt_tokens(total_tokens)}{pct_part}{cost_str}{water_str}")
     elif args.style == "off":
-        parts.append(f"ctx{pct_part}{cost_str}{water_str}")
+        parts.append(f"{fmt_label('ctx')}{pct_part}{cost_str}{water_str}")
     else:
         bar = progress_bar(used_pct, args.style)
-        parts.append(f"ctx {bar}{pct_part}{cost_str}{water_str}")
+        parts.append(f"{fmt_label('ctx')} {bar}{pct_part}{cost_str}{water_str}")
 
     # ── Rate limit usage (session + weekly) ─────────────────────
     # Read from native rate_limits field (Claude Code ≥2.1.80)
@@ -1153,7 +1325,7 @@ def main():
             # and the next API response.
             if not five_hour:
                 if not args.no_5h and not args.hide_absent_5h:
-                    parts.append("5h ∞")
+                    parts.append(f"{fmt_label('5h')} ∞")
             elif session_pct is not None and not args.no_5h:
                 parts.append(usage_segment(
                     "5h", session_pct, session_reset, args.style,
@@ -1175,7 +1347,11 @@ def main():
         if totals:
             parts.append(f"{DIM}{' '.join(totals)}{RESET}")
 
-    print(_bound_to_columns(sep.join(parts)))
+    if args.powerline:
+        line = powerline_join(parts, badges, band_start, palette)
+    else:
+        line = sep.join(parts)
+    print(_bound_to_columns(line))
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ A statusline for [Claude Code](https://claude.ai/code) showing token usage, cost
 
 ## Features
 
+- **Powerline ribbon** — Segments joined into one band, on by default: the directory and session name in cyan and pink, then a background that steps from light under the model to dark under the last segment. Dark and light palettes (`--powerline-theme`). Needs a Nerd Font or a terminal that draws powerline glyphs, see [Terminal rendering](#terminal-rendering); `--no-powerline` separates segments with a character instead
 - **Current directory + model + reasoning effort** — At-a-glance context (read from `~/.claude/settings.json`, configurable icon presets)
 - **Session name** — Shown next to the directory when the session has a name (`/rename`, `--name`) or an AI-generated title
 - **Git branch** — On by default, shown only when the line does not already imply it (`--no-git` to disable):
@@ -21,7 +22,8 @@ A statusline for [Claude Code](https://claude.ai/code) showing token usage, cost
 - **Weekly usage bar (7d)** — Rolling 7-day rate limit utilization with reset countdown + accumulated API cost
 - **Billing period total** — Accumulated cost for the current billing cycle (resets on configurable billing day)
 - **6 bar styles** — `dots` (default), `text`, `bar`, `ball`, `capped`, `filled`, or `off` for no bars
-- **Style-matched separators** — Separator character matches the bar style (overridable)
+- **Style-matched separators** — With `--no-powerline`, the separator character matches the bar style (overridable)
+- **Bold labels** — `ctx`, `5h` and `7d` stand out from the colored bars and percentages
 
 ## Installation
 
@@ -66,7 +68,9 @@ Do not put `uvx --from git+…` in the status line command. uv then fetches the 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--style` | `dots` | Bar style: `text`, `bar`, `ball`, `capped`, `dots`, `filled`, `off` |
-| `--separator` | *(matches style)* | Separator character between segments |
+| `--powerline` / `--no-powerline` | on | Join segments as a powerline ribbon. Needs a Nerd Font or a terminal that draws U+E0B0, see [Terminal rendering](#terminal-rendering). `--no-powerline` separates segments with `--separator` |
+| `--powerline-theme` | `auto` | Ribbon palette: `dark`, `light`, or `auto`, which follows Claude Code's `theme` setting when it names a light or dark theme and uses `dark` otherwise |
+| `--separator` | *(matches style)* | Separator character between segments with `--no-powerline` |
 | `--git` / `--no-git` | on | Show current git branch |
 | `--no-usage` | off | Disable rate limit usage bars |
 | `--no-5h` | off | Disable the 5-hour session limit segment |
@@ -94,8 +98,8 @@ Example with all options:
 
 ### Bar styles
 
-| Style | Bar | Separator |
-|-------|-----|-----------|
+| Style | Bar | Separator (`--no-powerline`) |
+|-------|-----|------------------------------|
 | `dots` (default) | `●●●○○` | `●` |
 | `bar` | `██░░░` | `█` |
 | `ball` | `──●──` | `●` |
@@ -183,6 +187,8 @@ Rate limit utilization (session 5h and weekly 7d) is read from the native `rate_
 ### Terminal rendering
 
 The status line is built to be safe for Claude Code's TUI renderer: it emits a **single line** of plain text plus SGR colour codes only — no cursor-movement, screen-clear, OSC, or other escape sequences. Externally-sourced text (git branch, directory, session name, model name) is stripped of control characters before display, and the whole line is truncated to the terminal width Claude Code reports via `COLUMNS` (with an `…` ellipsis) so it never wraps onto a second row. The default `arrows` effort preset and the geometric bar glyphs are width-safe; the `bubbles` preset, the `⚡` fastMode suffix, and the `💧` water indicator use full-width emoji, whose rendered width some terminals measure differently.
+
+The default powerline ribbon draws its arrows with the Private Use Area glyphs U+E0B0 and U+E0B1 (one column each). They need a [Nerd Font](https://www.nerdfonts.com/) or a powerline-patched font, or a terminal that draws them itself, such as Ghostty. Other fonts show missing-glyph boxes instead; `--no-powerline` uses plain separator characters. The ribbon sets its own background and text colors, so pick the palette that suits the terminal with `--powerline-theme`. The script runs without access to the terminal and cannot ask it for its background color.
 
 > If you still see garbled/duplicated status lines, it's most likely a Claude Code renderer issue rather than this script — try updating Claude Code, setting `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, or `/clear`.
 

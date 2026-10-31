@@ -11,11 +11,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 Claude Counter is a Claude Code statusline script that displays:
+- A powerline ribbon by default (`--no-powerline` for separators): directory and session badges in cyan and pink, then segments whose background steps evenly from light under the model to dark under the last segment, with a dark and a light palette (`--powerline-theme`)
 - Current directory and model name
 - Session name next to the directory, when Claude Code reports one
 - Git branch when the line does not already imply it: main checkout, a worktree whose folder names another branch (orange), detached HEAD (orange hash), or no session name (on by default, `--no-git` to disable)
 - Token count with progress bar (6 styles, or `off`) + cache status
 - Percentages shaded green → orange → red (`--no-pct-color` to disable)
+- Bold segment labels (`ctx`, `5h`, `7d`)
 - Daily cost bar (1d) with configurable budget
 - Weekly cost bar (7d) with configurable budget
 - Estimated water footprint (session + billing period)
@@ -37,7 +39,9 @@ Single Python package, no external dependencies. Installable directly from git v
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--style` | `dots` | Bar style: text, bar, ball, capped, dots, filled, off |
-| `--separator` | (matches style) | Separator character between segments |
+| `--powerline` / `--no-powerline` | on | Powerline ribbon (U+E0B0 arrows, needs a Nerd Font or a terminal that draws them) or separators |
+| `--powerline-theme` | `auto` | Ribbon palette: dark, light, or auto (Claude Code's `theme` setting when it names one, else dark) |
+| `--separator` | (matches style) | Separator character between segments with `--no-powerline` |
 | `--git` / `--no-git` | on | Show current git branch |
 | `--no-usage` | off | Disable rate limit usage bars |
 | `--no-5h` | off | Disable 5-hour session limit segment |
@@ -90,6 +94,8 @@ uv tool install git+https://github.com/bonkey/claude-counter-statusbar
 Update with `uv tool upgrade claude-counter`. Do not use `uvx --from git+…` as the status line command: uv then runs a `git fetch` against GitHub on every refresh.
 
 ## Bar styles (credit: Owloops/claude-powerline)
+
+Separators apply only with `--no-powerline`.
 
 - `dots` (default): `●●●○○` separator `●`
 - `bar`: `██░░░` separator `█`
