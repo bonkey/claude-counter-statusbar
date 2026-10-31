@@ -76,6 +76,7 @@ WATER_WH_PER_1K_INPUT = 0.22
 WATER_WH_PER_1K_OUTPUT = 2.2
 WATER_BASELINE_INPUT_PRICE = 3.0  # $/MTok of the Sonnet-class anchor
 WATER_ICON = "💧"
+COST_ICON = "💵"
 
 BAR_STYLES = {
     "bar":    ("█", "░", None, None),
@@ -289,13 +290,11 @@ def fmt_tokens(n):
 
 
 def fmt_cost(usd):
-    if usd >= 1.0:
-        return f"${usd:.2f}"
     if usd >= 0.01:
-        return f"${usd:.2f}"
+        return f"{COST_ICON}{usd:.2f}"
     if usd > 0:
-        return f"${usd:.3f}"
-    return "$0.00"
+        return f"{COST_ICON}{usd:.3f}"
+    return f"{COST_ICON}0.00"
 
 
 def fmt_water(liters):
@@ -578,7 +577,7 @@ def usage_segment(label, pct, resets_at, style_name, cost=None, show_pct=True, c
     pct_part = f" {fmt_pct(pct, color)}" if show_pct else ""
     reset_s = fmt_reset(resets_at)
     reset_part = f" {DIM}{reset_s}{RESET}" if reset_s else ""
-    cost_part = f" {DIM}~{fmt_cost(cost)}{RESET}" if cost and cost > 0 else ""
+    cost_part = f" {DIM}{fmt_cost(cost)}{RESET}" if cost and cost > 0 else ""
     bar_part = "" if style_name in ("text", "off") else f" {progress_bar(pct, style_name)}"
     return f"{fmt_label(label)}{bar_part}{pct_part}{reset_part}{cost_part}"
 
@@ -1144,7 +1143,7 @@ def main():
         print(f"Scanning transcripts in {TRANSCRIPT_DIR}…", file=sys.stderr)
         sessions, total, water = sync_historical_costs()
         print(
-            f"Done: {sessions} sessions, ~{fmt_cost(total)} / {WATER_ICON}{fmt_water(water)} billing period total",
+            f"Done: {sessions} sessions, {fmt_cost(total)} / {WATER_ICON}{fmt_water(water)} billing period total",
             file=sys.stderr,
         )
         return
@@ -1269,7 +1268,7 @@ def main():
             model_name, total_input, total_output, cache_read, cache_creation,
         )
         if session_api_cost > 0:
-            cost_str = f" {DIM}~{fmt_cost(session_api_cost)}{RESET}"
+            cost_str = f" {DIM}{fmt_cost(session_api_cost)}{RESET}"
 
     # Estimated water footprint (grouped with token bar, no separator)
     water_str = ""
@@ -1341,7 +1340,7 @@ def main():
     if not args.no_total:
         totals = []
         if not args.no_cost and billing_cost > 0:
-            totals.append(f"~{fmt_cost(billing_cost)}/mo")
+            totals.append(f"{fmt_cost(billing_cost)}/mo")
         if not args.no_water and billing_water > 0:
             totals.append(f"{WATER_ICON}{fmt_water(billing_water)}/mo")
         if totals:

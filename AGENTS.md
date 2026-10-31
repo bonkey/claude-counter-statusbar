@@ -62,7 +62,7 @@ Session (5h) and weekly (7d) utilization is read from the native `rate_limits` f
 
 ## Cost estimation
 
-Estimated API cost is calculated per-model with cache discounts. Pricing is auto-fetched from LiteLLM and cached in `~/.claude/.claude-counter-pricing-cache.json` (24h TTL). Cache reads at 10%, writes at 200% of input price (1-hour caching used by Claude Code). Per-session costs are accumulated in `~/.claude/.claude-counter-cost-state.json` — 5h totals, 7d totals, and billing period total (resets on `--billing-day`, default 1st).
+Estimated API cost (`💵` segment) is calculated per-model with cache discounts. Pricing is auto-fetched from LiteLLM and cached in `~/.claude/.claude-counter-pricing-cache.json` (24h TTL). Cache reads at 10%, writes at 200% of input price (1-hour caching used by Claude Code). Per-session costs are accumulated in `~/.claude/.claude-counter-cost-state.json` — 5h totals, 7d totals, and billing period total (resets on `--billing-day`, default 1st).
 
 ## Water footprint
 
