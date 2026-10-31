@@ -141,7 +141,36 @@ class LiveRenderTests(IsolatedTestCase):
         self.assertIn(f"{sl.COST_ICON}1.00{sl.RESET} {sl.DIM}{sl.WATER_ICON}{sl.fmt_water(expected)}", out)
         self.assertIn(f"{sl.WATER_ICON}{sl.fmt_water(5.0 + expected)}/mo", out)
 
-    def test_no_water_skips_the_transcript(self):
+    def write_copied_session(self, parent, continued):
+        """SID's transcript starts with a request copied from parent."""
+        request = {"input_tokens": 1_000, "output_tokens": 100}
+        self.write_transcript(f"proj/{parent}.jsonl", [
+            assistant("req1", "claude-opus-5-5", request, session_id=parent),
+            cost_state(5.0, {}, session_id=parent),
+        ] + ([{"type": "continued-in", "sessionId": parent, "continuedInSessionId": SID}] if continued else []))
+        self.write_transcript(f"proj/{SID}.jsonl", [
+            {**assistant("req1", "claude-opus-5-5", request), "session_id": parent},
+            assistant("req2", "claude-opus-5-5", request),
+        ])
+        return os.path.join(self.transcripts, "proj", f"{SID}.jsonl")
+
+    def test_continuation_replaces_the_session_it_continues(self):
+        parent = "99999999-8888-7777-6666-555555555555"
+        path = self.write_copied_session(parent, continued=True)
+        self.write_state(billing_sessions={parent: 5.0, "other": 1.0}, billing_water={parent: 0.5, "other": 0.1})
+        self.render(payload(cost={"total_cost_usd": 6.0}, transcript_path=path))
+        state = self.read_state()
+        self.assertEqual(state["billing_sessions"], {"other": 1.0, SID: 6.0})
+        self.assertEqual(state["billing_water"].keys(), {"other", SID})
+
+    def test_session_resumed_under_a_new_id_keeps_the_original(self):
+        parent = "99999999-8888-7777-6666-555555555555"
+        path = self.write_copied_session(parent, continued=False)
+        self.write_state(billing_sessions={parent: 5.0})
+        self.render(payload(cost={"total_cost_usd": 1.0}, transcript_path=path))
+        self.assertEqual(self.read_state()["billing_sessions"], {parent: 5.0, SID: 1.0})
+
+    def test_no_water_shows_and_stores_no_water(self):
         self.write_session()
         self.write_state(billing_sessions={SID: 1.0})
         out = self.render(payload(
@@ -282,6 +311,21 @@ class SyncCostStateTests(IsolatedTestCase):
         sl.sync_historical_costs()
         self.assertEqual(self.read_state()["billing_sessions"], {child: 6.0})
 
+    def test_open_continuation_with_a_stored_total_replaces_its_parent(self):
+        child = "99999999-8888-7777-6666-555555555555"
+        self.write_transcript(f"proj/{SID}.jsonl", [
+            assistant("req1", "claude-fable-5-1", {"input_tokens": 1_000, "output_tokens": 100}),
+            cost_state(5.0, {}),
+            {"type": "continued-in", "sessionId": SID, "continuedInSessionId": child},
+        ])
+        self.write_transcript(f"proj/{child}.jsonl", [
+            assistant("req1", "claude-fable-5-1", {"input_tokens": 1_000, "output_tokens": 100}, session_id=child),
+            assistant("req2", "claude-fable-5-1", {"input_tokens": 1_000, "output_tokens": 100}, session_id=child),
+        ])
+        self.write_state(billing_sessions={child: 6.0})
+        sl.sync_historical_costs()
+        self.assertEqual(self.read_state()["billing_sessions"], {child: 6.0})
+
     def test_keeps_this_periods_sessions_it_cannot_find(self):
         self.write_state(billing_sessions={"deleted": 4.0}, billing_water={"deleted": 1.5, "water-only": 0.5})
         sl.sync_historical_costs()
@@ -309,6 +353,32 @@ class SyncCostStateTests(IsolatedTestCase):
         state = self.read_state()
         self.assertEqual(state["billing_sessions"], {SID: 50.0, ended: 3.0})
         self.assertEqual(state["billing_water"][SID], 7.0)
+
+    def test_resumed_session_keeps_the_status_lines_larger_cost(self):
+        request = {"input_tokens": 10, "output_tokens": 100}
+        self.write_transcript(f"proj/{SID}.jsonl", [
+            assistant("req1", "claude-opus-5-5", request),
+            cost_state(5.0, {"claude-opus-5-5": {"inputTokens": 10, "outputTokens": 100}}),
+            assistant("req2", "claude-opus-5-5", request),
+        ])
+        # Subagent requests come after the cost-state in scan order, not in time.
+        self.write_transcript(f"proj/{SID}/subagents/agent-a1.jsonl", [assistant("req3", "claude-opus-5-5", request)])
+        self.write_state(billing_sessions={SID: 8.0})
+        sl.sync_historical_costs()
+        self.assertEqual(self.read_state()["billing_sessions"], {SID: 8.0})
+
+    def test_session_resumed_and_ended_again_uses_its_last_cost_state(self):
+        request = {"input_tokens": 10, "output_tokens": 100}
+        self.write_transcript(f"proj/{SID}.jsonl", [
+            assistant("req1", "claude-opus-5-5", request),
+            cost_state(5.0, {}),
+            assistant("req2", "claude-opus-5-5", request),
+            cost_state(7.0, {}),
+        ])
+        self.write_transcript(f"proj/{SID}/subagents/agent-a1.jsonl", [assistant("req3", "claude-opus-5-5", request)])
+        self.write_state(billing_sessions={SID: 9.0})
+        sl.sync_historical_costs()
+        self.assertEqual(self.read_state()["billing_sessions"], {SID: 7.0})
 
     def test_background_sync_skips_the_pricing_fetch(self):
         self.write_transcript(f"proj/{SID}.jsonl", [

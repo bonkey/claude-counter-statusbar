@@ -702,12 +702,13 @@ def _save_cost_state(state):
         pass
 
 
-def update_accumulated_costs(session_id, session_cost=None, session_water=None):
+def update_accumulated_costs(session_id, session_cost=None, session_water=None, continues=()):
     """Record the session's cost and water and return the billing period totals.
 
-    A None value leaves the stored entry untouched. A session with no stored
-    cost starts a background --sync, which records the totals of sessions
-    that ended since the last one.
+    A None value leaves the stored entry untouched. The sessions in continues
+    are removed, because this session's totals include theirs. A session with
+    no stored cost starts a background --sync, which records the totals of
+    sessions that ended since the last one.
     Returns (billing_cost, billing_water).
     """
     state = _load_cost_state()
@@ -731,6 +732,9 @@ def update_accumulated_costs(session_id, session_cost=None, session_water=None):
         billing_sessions[session_id] = session_cost
     if session_water is not None:
         billing_water[session_id] = session_water
+    for sid in continues:
+        billing_sessions.pop(sid, None)
+        billing_water.pop(sid, None)
     state["billing_sessions"] = billing_sessions
     state["billing_water"] = billing_water
 
@@ -901,15 +905,18 @@ def _estimate_water_from_usage(usage, model_str):
     return water + sum(_estimate_water_from_usage(it, it.get("model")) for it in _advisor_usages(usage))
 
 
-def transcript_water(transcript_path):
-    """Water of the requests in a session's transcript and its subagents' transcripts.
+def read_transcript(transcript_path):
+    """Return the water of a session's requests and the sessions it copied requests from.
 
-    Reads the files whole on every call: a 38 MB transcript takes about 30 ms.
+    Covers the transcript and its subagents' transcripts, read whole on every
+    call: a 38 MB transcript takes about 30 ms. A request copied from another
+    session keeps that session's id in session_id.
     """
     paths = [transcript_path] + globmod.glob(
         os.path.join(os.path.splitext(transcript_path)[0], "subagents", "*.jsonl")
     )
     requests = {}  # requestId -> (usage, model) of its final streaming update
+    sources = set()
     for path in paths:
         try:
             with open(path, "rb") as f:
@@ -925,12 +932,41 @@ def transcript_water(transcript_path):
                     req_id = entry.get("requestId")
                     if entry.get("type") != "assistant" or not usage or not req_id:
                         continue
+                    if path == transcript_path and entry.get("session_id") not in (None, entry.get("sessionId")):
+                        sources.add(entry["session_id"])
                     prev = requests.get(req_id)
                     if prev is None or usage.get("output_tokens", 0) > prev[0].get("output_tokens", 0):
                         requests[req_id] = (usage, msg.get("model", ""))
         except OSError:
             continue
-    return sum(_estimate_water_from_usage(usage, model) for usage, model in requests.values())
+    water = sum(_estimate_water_from_usage(usage, model) for usage, model in requests.values())
+    return water, sources
+
+
+def continued_sessions(transcript_path, session_id, sources):
+    """The sessions among sources whose transcript says this session continues them.
+
+    Claude Code writes a continued-in entry when it moves a session into a
+    background session, which carries over its cost. A session resumed under
+    a new id also copies requests, but its cost starts over.
+    """
+    found = set()
+    for source in sources:
+        path = os.path.join(os.path.dirname(transcript_path), f"{os.path.basename(source)}.jsonl")
+        try:
+            with open(path, "rb") as f:
+                for line in f:
+                    if b'"continued-in"' not in line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        continue
+                    if entry.get("type") == "continued-in" and entry.get("continuedInSessionId") == session_id:
+                        found.add(source)
+        except OSError:
+            continue
+    return found
 
 
 def sync_historical_costs():
@@ -960,6 +996,9 @@ def sync_historical_costs():
     session_timestamps = {}  # session_id -> latest timestamp
     cost_states = {}  # session_id -> last cost-state entry
     continued_in = {}  # session_id -> session that continues it
+    # A resumed session appends to its transcript after the cost-state
+    # written when it ended, so that total is out of date until it ends again.
+    resumed = set()
 
     for fpath in files:
         try:
@@ -969,6 +1008,7 @@ def sync_historical_costs():
         except OSError:
             continue
 
+        ended_in_file = set()
         try:
             with open(fpath) as f:
                 for line in f:
@@ -979,6 +1019,8 @@ def sync_historical_costs():
 
                     if entry.get("type") == "cost-state" and entry.get("sessionId"):
                         cost_states[entry["sessionId"]] = entry
+                        ended_in_file.add(entry["sessionId"])
+                        resumed.discard(entry["sessionId"])
                         continue
                     if entry.get("type") == "continued-in" and entry.get("sessionId"):
                         continued_in[entry["sessionId"]] = entry.get("continuedInSessionId")
@@ -993,6 +1035,8 @@ def sync_historical_costs():
                     req_id = entry.get("requestId", "")
                     if not req_id:
                         continue
+                    if entry.get("sessionId") in ended_in_file:
+                        resumed.add(entry["sessionId"])
 
                     # Keep entry with highest output_tokens (final streaming update)
                     out = usage.get("output_tokens", 0)
@@ -1014,8 +1058,16 @@ def sync_historical_costs():
         except OSError:
             continue
 
-    # A continuation's total includes the session it continues.
-    folded = {sid for sid, continuation in continued_in.items() if continuation in cost_states}
+    state = _load_cost_state()
+    stored_costs = state.get("billing_sessions", {})
+    stored_water = state.get("billing_water", {})
+
+    # A continuation's total includes the session it continues, once it has
+    # one: a cost-state, or a total the status line stored while it ran.
+    folded = {
+        sid for sid, continuation in continued_in.items()
+        if continuation in cost_states or continuation in stored_costs
+    }
 
     # A cost-state entry holds Claude Code's own session total, which also
     # counts calls the transcript leaves out, such as away summaries and
@@ -1045,15 +1097,11 @@ def sync_historical_costs():
         water = _estimate_water_from_usage(req["usage"], req["model"])
         session_water[sid] = session_water.get(sid, 0.0) + water
 
-    # Now bucket sessions into windows based on their latest timestamp
-    state = _load_cost_state()
-    stored_costs = state.get("billing_sessions", {})
-    stored_water = state.get("billing_water", {})
-
     # While a session runs, the status line stores Claude Code's own total,
     # which also counts calls the transcript leaves out. A session without a
-    # cost-state keeps that stored value when it is larger.
-    for sid in session_costs.keys() - cost_states.keys():
+    # cost-state, or resumed since its last one, keeps that stored value when
+    # it is larger.
+    for sid in session_costs.keys() - (cost_states.keys() - resumed):
         session_costs[sid] = max(session_costs[sid], stored_costs.get(sid, 0.0))
         session_water[sid] = max(session_water.get(sid, 0.0), stored_water.get(sid, 0.0))
 
@@ -1365,7 +1413,9 @@ def main():
     if not args.no_cost and session_api_cost > 0:
         cost_str = f" {DIM}{fmt_cost(session_api_cost)}{RESET}"
     transcript_path = data.get("transcript_path")
-    water = transcript_water(transcript_path) if transcript_path and not args.no_water else 0.0
+    water, sources = read_transcript(transcript_path) if transcript_path else (0.0, set())
+    if args.no_water:
+        water = 0.0
     if water > 0:
         cost_str += f" {DIM}{WATER_ICON}{fmt_water(water)}{RESET}"
 
@@ -1397,7 +1447,8 @@ def main():
     session_id = data.get("session_id") or ""
     cost_upd = session_api_cost if not args.no_cost and session_api_cost > 0 else None
     if session_id:
-        billing_cost, billing_water = update_accumulated_costs(session_id, cost_upd, water or None)
+        continues = continued_sessions(transcript_path, session_id, sources) if sources else ()
+        billing_cost, billing_water = update_accumulated_costs(session_id, cost_upd, water or None, continues)
 
     if five_hour or seven_day:
         session_pct = five_hour.get("used_percentage", 0)
