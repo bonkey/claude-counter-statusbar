@@ -910,6 +910,8 @@ def sync_historical_costs():
     # Structure: {requestId: {usage, model, sessionId, timestamp}}
     requests = {}
     session_timestamps = {}  # session_id -> latest timestamp
+    cost_states = {}  # session_id -> last cost-state entry
+    continued_in = {}  # session_id -> session that continues it
 
     for fpath in files:
         try:
@@ -927,6 +929,12 @@ def sync_historical_costs():
                     except json.JSONDecodeError:
                         continue
 
+                    if entry.get("type") == "cost-state" and entry.get("sessionId"):
+                        cost_states[entry["sessionId"]] = entry
+                        continue
+                    if entry.get("type") == "continued-in" and entry.get("sessionId"):
+                        continued_in[entry["sessionId"]] = entry.get("continuedInSessionId")
+                        continue
                     if entry.get("type") != "assistant":
                         continue
                     msg = entry.get("message") or {}
@@ -958,11 +966,32 @@ def sync_historical_costs():
         except OSError:
             continue
 
-    # Sum costs/water per session from deduplicated requests
+    # A continuation's total includes the session it continues.
+    folded = {sid for sid, continuation in continued_in.items() if continuation in cost_states}
+
+    # A cost-state entry holds Claude Code's own session total, which also
+    # counts calls the transcript leaves out, such as away summaries and
+    # compaction. Sessions without one are priced per request: transcripts
+    # from older Claude Code versions, or sessions that have not ended.
     session_costs = {}
     session_water = {}
+    for sid, cost_state in cost_states.items():
+        if sid in folded:
+            continue
+        session_costs[sid] = cost_state.get("totalCostUSD") or 0.0
+        session_water[sid] = sum(
+            _estimate_water_from_usage({
+                "input_tokens": u.get("inputTokens", 0),
+                "output_tokens": u.get("outputTokens", 0),
+                "cache_read_input_tokens": u.get("cacheReadInputTokens", 0),
+                "cache_creation_input_tokens": u.get("cacheCreationInputTokens", 0),
+            }, model)
+            for model, u in (cost_state.get("modelUsage") or {}).items()
+        )
     for req in requests.values():
         sid = req["sessionId"]
+        if sid in cost_states or sid in folded:
+            continue
         cost = _estimate_cost_from_usage(req["usage"], req["model"])
         session_costs[sid] = session_costs.get(sid, 0.0) + cost
         water = _estimate_water_from_usage(req["usage"], req["model"])

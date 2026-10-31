@@ -64,17 +64,19 @@ Session (5h) and weekly (7d) utilization is read from the native `rate_limits` f
 
 The session cost (`💵` segment) is `cost.total_cost_usd` from Claude Code's stdin JSON. `context_window` token counts describe only the most recent API response, so they cannot price a session. Each session's latest cost is stored in `~/.claude/.claude-counter-cost-state.json` under `billing_sessions`, and their sum is the billing period total (resets on `--billing-day`, default 1st).
 
-`--sync` prices transcripts itself. Pricing is auto-fetched from LiteLLM and cached in `~/.claude/.claude-counter-pricing-cache.json` (24h TTL) as five USD-per-MTok rates per model: input, output, cache read, 5-minute cache write, 1-hour cache write. Cache read rates differ by model (0.025× input on Fable, 0.05× on Opus and Sonnet, 0.1× on Haiku). A request's cache writes are split by `cache_creation.ephemeral_5m_input_tokens`; the rest are priced as 1-hour. Advisor calls appear only in `usage.iterations` (type `advisor_message`, with their own `model`) and are priced at that model.
+`--sync` takes each session's total from the last `cost-state` entry in its main transcript (`totalCostUSD`, written by Claude Code ≥2.1.280 when a session ends). It is the same figure as `cost.total_cost_usd` and includes calls missing from the transcript, such as away summaries and compaction. A session with a `continued-in` entry is skipped when its continuation (`continuedInSessionId`) has a `cost-state`, because the continuation's total includes it.
+
+Sessions without a `cost-state` are priced per request. Pricing is auto-fetched from LiteLLM and cached in `~/.claude/.claude-counter-pricing-cache.json` (24h TTL) as five USD-per-MTok rates per model: input, output, cache read, 5-minute cache write, 1-hour cache write. Cache read rates differ by model (0.025× input on Fable, 0.05× on Opus and Sonnet, 0.1× on Haiku). A request's cache writes are split by `cache_creation.ephemeral_5m_input_tokens`; the rest are priced as 1-hour. Advisor calls appear only in `usage.iterations` (type `advisor_message`, with their own `model`) and are priced at that model.
 
 ## Water footprint
 
-Estimated liters of water per billing period (`💧` segment, `--no-water` to disable). Equation: `water = energy × (WUE_onsite/PUE + WUE_offsite) ≈ energy × 3.4 L/kWh`. Energy per token is anchored on the measured Claude Sonnet figure from arXiv:2505.09598 (0.22 Wh/1k input, 2.2 Wh/1k output), scaled per Anthropic tier by relative API input price; cache reads at 10% of input energy. Per-session water is stored in `billing_water` in the cost state. Only `--sync` writes it, because Claude Code reports no per-session token totals.
+Estimated liters of water per billing period (`💧` segment, `--no-water` to disable). Equation: `water = energy × (WUE_onsite/PUE + WUE_offsite) ≈ energy × 3.4 L/kWh`. Energy per token is anchored on the measured Claude Sonnet figure from arXiv:2505.09598 (0.22 Wh/1k input, 2.2 Wh/1k output), scaled per Anthropic tier by relative API input price; cache reads at 10% of input energy. Per-session water is stored in `billing_water` in the cost state. Only `--sync` writes it, because the status line gets no per-session token totals. It uses the `cost-state` entry's per-model token counts (`modelUsage`) when present, else the transcript's requests.
 
 ## Historical sync
 
 `claude-counter --sync` does two things:
 1. **Updates pricing** from LiteLLM's model pricing database (input, output, cache read, 5-minute and 1-hour cache write rates)
-2. **Scans transcripts** in `~/.claude/projects/*/*.jsonl` and `~/.claude/projects/*/*/subagents/*.jsonl` (subagent transcripts carry the parent `sessionId`) to backfill cost and water from past sessions (deduplicated by `requestId` to avoid counting streaming updates)
+2. **Scans transcripts** in `~/.claude/projects/*/*.jsonl` and `~/.claude/projects/*/*/subagents/*.jsonl` (subagent transcripts carry the parent `sessionId`) to backfill cost and water from past sessions, from `cost-state` entries when present, else from requests (deduplicated by `requestId` to avoid counting streaming updates)
 
 Only processes files modified within the current billing period. Run periodically to update pricing and recalculate costs.
 

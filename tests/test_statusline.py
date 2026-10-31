@@ -49,6 +49,12 @@ class IsolatedTestCase(unittest.TestCase):
         with open(sl.COST_STATE_FILE) as f:
             return json.load(f)
 
+    def write_transcript(self, path, entries):
+        path = os.path.join(self.transcripts, path)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.writelines(json.dumps(e) + "\n" for e in entries)
+
     def render(self, payload, *args):
         argv = ["claude-counter", "--no-git", "--no-powerline", *args]
         out = io.StringIO()
@@ -120,12 +126,6 @@ def assistant(request_id, model, usage, session_id=SID):
 
 
 class SyncTests(IsolatedTestCase):
-    def write_transcript(self, path, entries):
-        path = os.path.join(self.transcripts, path)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
-            f.writelines(json.dumps(e) + "\n" for e in entries)
-
     def test_keeps_last_streaming_update_per_request(self):
         final = {"input_tokens": 10, "output_tokens": 100}
         self.write_transcript(f"proj/{SID}.jsonl", [
@@ -183,6 +183,49 @@ class SyncTests(IsolatedTestCase):
             sl._estimate_cost_from_usage(main_usage, "claude-opus-5-5")
             + sl._estimate_cost_from_usage(agent_usage, "claude-fable-5-1"),
         )
+
+
+def cost_state(total, model_usage, session_id=SID):
+    return {"type": "cost-state", "sessionId": session_id, "totalCostUSD": total, "modelUsage": model_usage}
+
+
+class SyncCostStateTests(IsolatedTestCase):
+    def test_uses_claude_codes_session_total_over_token_pricing(self):
+        model_usage = {"claude-opus-5-5": {
+            "inputTokens": 1_000, "outputTokens": 2_000,
+            "cacheReadInputTokens": 100_000, "cacheCreationInputTokens": 5_000, "costUSD": 9.5,
+        }}
+        self.write_transcript(f"proj/{SID}.jsonl", [
+            assistant("req1", "claude-opus-5-5", {"input_tokens": 10, "output_tokens": 100}),
+            cost_state(4.0, {}),
+            cost_state(9.5, model_usage),
+        ])
+        self.write_transcript(f"proj/{SID}/subagents/agent-a1.jsonl", [
+            assistant("req2", "claude-opus-5-5", {"input_tokens": 10, "output_tokens": 100}),
+        ])
+        sl.sync_historical_costs()
+        state = self.read_state()
+        self.assertEqual(state["billing_sessions"], {SID: 9.5})
+        self.assertAlmostEqual(state["billing_water"][SID], sl._estimate_water_from_usage({
+            "input_tokens": 1_000, "output_tokens": 2_000,
+            "cache_read_input_tokens": 100_000, "cache_creation_input_tokens": 5_000,
+        }, "claude-opus-5-5"))
+
+    def test_continued_session_counts_once(self):
+        child = "99999999-8888-7777-6666-555555555555"
+        self.write_transcript(f"proj/{SID}.jsonl", [
+            assistant("req1", "claude-fable-5-1", {"input_tokens": 1_000, "output_tokens": 100}),
+            cost_state(5.0, {}),
+            {"type": "continued-in", "sessionId": SID, "continuedInSessionId": child},
+        ])
+        # The continuation copies the parent's requests, and its total includes the parent's cost.
+        self.write_transcript(f"proj/{child}.jsonl", [
+            assistant("req1", "claude-fable-5-1", {"input_tokens": 1_000, "output_tokens": 100}, session_id=child),
+            assistant("req2", "claude-fable-5-1", {"input_tokens": 1_000, "output_tokens": 100}, session_id=child),
+            cost_state(6.0, {}, session_id=child),
+        ])
+        sl.sync_historical_costs()
+        self.assertEqual(self.read_state()["billing_sessions"], {child: 6.0})
 
 
 class PricingTests(IsolatedTestCase):
