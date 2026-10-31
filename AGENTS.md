@@ -20,7 +20,7 @@ Claude Counter is a Claude Code statusline script that displays:
 - Bold segment labels (`ctx`, `5h`, `7d`)
 - Daily cost bar (1d) with configurable budget
 - Weekly cost bar (7d) with configurable budget
-- Estimated water footprint (billing period, from `--sync`)
+- Estimated water footprint (session, from its transcript, and billing period)
 
 Single Python package, no external dependencies. Installable directly from git via `uv tool install` or `pipx install`.
 
@@ -70,7 +70,7 @@ Sessions without a `cost-state` are priced per request. Pricing is auto-fetched 
 
 ## Water footprint
 
-Estimated liters of water per billing period (`💧` segment, `--no-water` to disable). Equation: `water = energy × (WUE_onsite/PUE + WUE_offsite) ≈ energy × 3.4 L/kWh`. Energy per token is anchored on the measured Claude Sonnet figure from arXiv:2505.09598 (0.22 Wh/1k input, 2.2 Wh/1k output), scaled per Anthropic tier by relative API input price; cache reads at 10% of input energy. Per-session water is stored in `billing_water` in the cost state. Only `--sync` writes it, because the status line gets no per-session token totals. It uses the `cost-state` entry's per-model token counts (`modelUsage`) when present, else the transcript's requests.
+Estimated liters of water per billing period (`💧` segment, `--no-water` to disable). Equation: `water = energy × (WUE_onsite/PUE + WUE_offsite) ≈ energy × 3.4 L/kWh`. Energy per token is anchored on the measured Claude Sonnet figure from arXiv:2505.09598 (0.22 Wh/1k input, 2.2 Wh/1k output), scaled per Anthropic tier by relative API input price; cache reads at 10% of input energy. Per-session water is stored in `billing_water` in the cost state. The status line computes it on each refresh from the session's transcript (`transcript_path`) and its `subagents/*.jsonl`, deduplicated by `requestId`, and shows it after the session cost. `--sync` uses the `cost-state` entry's per-model token counts (`modelUsage`) when present, else the transcript's requests.
 
 ## Historical sync
 
@@ -78,7 +78,9 @@ Estimated liters of water per billing period (`💧` segment, `--no-water` to di
 1. **Updates pricing** from LiteLLM's model pricing database (input, output, cache read, 5-minute and 1-hour cache write rates)
 2. **Scans transcripts** in `~/.claude/projects/*/*.jsonl` and `~/.claude/projects/*/*/subagents/*.jsonl` (subagent transcripts carry the parent `sessionId`) to backfill cost and water from past sessions, from `cost-state` entries when present, else from requests (deduplicated by `requestId` to avoid counting streaming updates)
 
-Only processes files modified within the current billing period. Run periodically to update pricing and recalculate costs.
+Only processes files modified within the current billing period. For a session without a `cost-state`, a larger cost or water the status line stored is kept. Sessions of the current period whose transcripts are missing keep their stored values, unless a continuation with a `cost-state` holds them.
+
+The status line runs the scan without the pricing fetch (hidden `--sync-background`, a detached child) when the session has no stored cost, at most once per `SYNC_BACKOFF` (5 minutes). The cost state is written to a temporary file and renamed, so concurrent readers never see a partial file.
 
 ## Install pattern
 

@@ -26,9 +26,11 @@ class IsolatedTestCase(unittest.TestCase):
             "COST_STATE_FILE": os.path.join(self.dir, "state.json"),
             "PRICING_CACHE_FILE": os.path.join(self.dir, "pricing.json"),
             "PRICING_REFRESH_STAMP_FILE": os.path.join(self.dir, "refresh"),
+            "SYNC_STAMP_FILE": os.path.join(self.dir, "sync"),
             "CLAUDE_SETTINGS_FILE": os.path.join(self.dir, "settings.json"),
             "TRANSCRIPT_DIR": self.transcripts,
             "API_PRICING": dict(sl.FALLBACK_PRICING),
+            "BILLING_DAY": sl.BILLING_DAY,  # --billing-day sets it
         }.items():
             patcher = mock.patch.object(sl, name, value)
             patcher.start()
@@ -113,6 +115,58 @@ class LiveRenderTests(IsolatedTestCase):
         self.assertIn(f"{sl.WATER_ICON}2.0L/mo", out)
         self.assertNotIn(sl.COST_ICON, out)
         self.assertEqual(self.read_state()["billing_sessions"], {SID: 3.0})
+
+    def write_session(self):
+        """A transcript whose first request streams twice, with one subagent request."""
+        first = {"input_tokens": 1_000, "output_tokens": 2_000}
+        agent = {"input_tokens": 3_000, "output_tokens": 500}
+        self.write_transcript(f"proj/{SID}.jsonl", [
+            assistant("req1", "claude-opus-5-5", {"input_tokens": 1_000, "output_tokens": 1}),
+            assistant("req1", "claude-opus-5-5", first),
+        ])
+        self.write_transcript(f"proj/{SID}/subagents/agent-a1.jsonl", [assistant("req2", "claude-fable-5-1", agent)])
+        with open(os.path.join(self.transcripts, "proj", f"{SID}.jsonl"), "a") as f:
+            f.write('{"type":"assistant","requestId":"req3","message":{"usage":')  # still being written
+        return (sl._estimate_water_from_usage(first, "claude-opus-5-5")
+                + sl._estimate_water_from_usage(agent, "claude-fable-5-1"))
+
+    def test_session_water_comes_from_its_transcripts(self):
+        expected = self.write_session()
+        self.write_state(billing_sessions={SID: 1.0}, billing_water={"older": 5.0})
+        out = self.render(payload(
+            cost={"total_cost_usd": 1.0},
+            transcript_path=os.path.join(self.transcripts, "proj", f"{SID}.jsonl"),
+        ))
+        self.assertAlmostEqual(self.read_state()["billing_water"][SID], expected)
+        self.assertIn(f"{sl.COST_ICON}1.00{sl.RESET} {sl.DIM}{sl.WATER_ICON}{sl.fmt_water(expected)}", out)
+        self.assertIn(f"{sl.WATER_ICON}{sl.fmt_water(5.0 + expected)}/mo", out)
+
+    def test_no_water_skips_the_transcript(self):
+        self.write_session()
+        self.write_state(billing_sessions={SID: 1.0})
+        out = self.render(payload(
+            cost={"total_cost_usd": 1.0},
+            transcript_path=os.path.join(self.transcripts, "proj", f"{SID}.jsonl"),
+        ), "--no-water")
+        self.assertNotIn(sl.WATER_ICON, out)
+        self.assertEqual(self.read_state()["billing_water"], {})
+
+    def sync_spawns(self):
+        return [c for c in sl.subprocess.Popen.call_args_list if "--sync-background" in c.args[0]]
+
+    def test_new_session_starts_one_background_sync(self):
+        sl.BILLING_DAY = 15  # the period the render computes, on any date
+        self.write_state(billing_sessions={"older": 1.0})
+        self.render(payload(), "--billing-day", "15")
+        self.render(payload())
+        spawns = self.sync_spawns()
+        self.assertEqual(len(spawns), 1)
+        self.assertEqual(spawns[0].args[0][-3:], ["--sync-background", "--billing-day", "15"])
+
+    def test_known_session_starts_no_sync(self):
+        self.write_state(billing_sessions={SID: 1.0})
+        self.render(payload(cost={"total_cost_usd": 2.0}))
+        self.assertEqual(self.sync_spawns(), [])
 
 
 def assistant(request_id, model, usage, session_id=SID):
@@ -224,8 +278,47 @@ class SyncCostStateTests(IsolatedTestCase):
             assistant("req2", "claude-fable-5-1", {"input_tokens": 1_000, "output_tokens": 100}, session_id=child),
             cost_state(6.0, {}, session_id=child),
         ])
+        self.write_state(billing_sessions={SID: 5.0})
         sl.sync_historical_costs()
         self.assertEqual(self.read_state()["billing_sessions"], {child: 6.0})
+
+    def test_keeps_this_periods_sessions_it_cannot_find(self):
+        self.write_state(billing_sessions={"deleted": 4.0}, billing_water={"deleted": 1.5, "water-only": 0.5})
+        sl.sync_historical_costs()
+        state = self.read_state()
+        self.assertEqual(state["billing_sessions"], {"deleted": 4.0})
+        self.assertEqual(state["billing_water"], {"deleted": 1.5, "water-only": 0.5})
+
+    def test_drops_sessions_of_an_earlier_period(self):
+        self.write_state(billing_period="2000-01", billing_sessions={"old": 4.0}, billing_water={"old": 1.5})
+        sl.sync_historical_costs()
+        state = self.read_state()
+        self.assertEqual((state["billing_sessions"], state["billing_water"]), ({}, {}))
+
+    def test_keeps_the_status_lines_larger_cost_until_a_cost_state(self):
+        ended = "99999999-8888-7777-6666-555555555555"
+        self.write_transcript(f"proj/{SID}.jsonl", [
+            assistant("req1", "claude-opus-5-5", {"input_tokens": 10, "output_tokens": 100}),
+        ])
+        self.write_transcript(f"proj/{ended}.jsonl", [
+            assistant("req2", "claude-opus-5-5", {"input_tokens": 10, "output_tokens": 100}, session_id=ended),
+            cost_state(3.0, {}, session_id=ended),
+        ])
+        self.write_state(billing_sessions={SID: 50.0, ended: 40.0}, billing_water={SID: 7.0})
+        sl.sync_historical_costs()
+        state = self.read_state()
+        self.assertEqual(state["billing_sessions"], {SID: 50.0, ended: 3.0})
+        self.assertEqual(state["billing_water"][SID], 7.0)
+
+    def test_background_sync_skips_the_pricing_fetch(self):
+        self.write_transcript(f"proj/{SID}.jsonl", [
+            assistant("req1", "claude-opus-5-5", {"input_tokens": 10, "output_tokens": 100}),
+            cost_state(2.0, {}),
+        ])
+        with mock.patch.object(sys, "argv", ["claude-counter", "--sync-background"]), \
+                mock.patch.object(sl.urllib.request, "urlopen", side_effect=AssertionError("network")):
+            sl.main()
+        self.assertEqual(self.read_state()["billing_sessions"], {SID: 2.0})
 
 
 class PricingTests(IsolatedTestCase):
@@ -246,6 +339,18 @@ class PricingTests(IsolatedTestCase):
         with open(sl.PRICING_CACHE_FILE) as f:
             self.assertEqual(json.load(f)["pricing"]["haiku"], [0.1, 0.5, 0.01, 0.125, 0.2])
         self.assertEqual(sl.API_PRICING["haiku"], (0.1, 0.5, 0.01, 0.125, 0.2))
+
+    def test_stale_cache_refreshes_in_a_detached_child_once_per_backoff(self):
+        sl._maybe_spawn_pricing_refresh()
+        sl._maybe_spawn_pricing_refresh()
+        sl.subprocess.Popen.assert_called_once()
+        self.assertEqual(sl.subprocess.Popen.call_args.args[0][1:], ["-m", "claude_counter.statusline", "--refresh-pricing"])
+
+    def test_fresh_cache_spawns_nothing(self):
+        with open(sl.PRICING_CACHE_FILE, "w") as f:
+            json.dump({"pricing": {}, "_cached_at": sl.time.time()}, f)
+        sl._maybe_spawn_pricing_refresh()
+        sl.subprocess.Popen.assert_not_called()
 
     def test_load_ignores_entries_without_cache_rates(self):
         with open(sl.PRICING_CACHE_FILE, "w") as f:

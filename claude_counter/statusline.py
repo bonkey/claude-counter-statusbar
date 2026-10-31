@@ -34,6 +34,8 @@ PRICING_CACHE_FILE = os.path.expanduser("~/.claude/.claude-counter-pricing-cache
 PRICING_CACHE_TTL = 86400  # 24 hours
 PRICING_REFRESH_STAMP_FILE = os.path.expanduser("~/.claude/.claude-counter-pricing-refresh")
 PRICING_REFRESH_BACKOFF = 3600  # cap background refresh attempts to once/hour
+SYNC_STAMP_FILE = os.path.expanduser("~/.claude/.claude-counter-sync")
+SYNC_BACKOFF = 300  # sessions starting together share one background sync
 
 # ANSI escape helpers
 RESET = "\033[0m"
@@ -688,19 +690,24 @@ def _load_cost_state():
 
 
 def _save_cost_state(state):
+    # Write a temporary file and rename it, so that other sessions and the
+    # background sync never read a half-written state.
+    tmp = f"{COST_STATE_FILE}.{os.getpid()}.tmp"
     try:
         os.makedirs(os.path.dirname(COST_STATE_FILE), exist_ok=True)
-        with open(COST_STATE_FILE, "w") as f:
+        with open(tmp, "w") as f:
             json.dump(state, f)
+        os.replace(tmp, COST_STATE_FILE)
     except OSError:
         pass
 
 
-def update_accumulated_costs(session_id, session_cost=None):
-    """Record the session's cost and return the billing period totals.
+def update_accumulated_costs(session_id, session_cost=None, session_water=None):
+    """Record the session's cost and water and return the billing period totals.
 
-    A None cost leaves the stored entry untouched. Water comes only from
-    --sync, because Claude Code reports no per-session token totals.
+    A None value leaves the stored entry untouched. A session with no stored
+    cost starts a background --sync, which records the totals of sessions
+    that ended since the last one.
     Returns (billing_cost, billing_water).
     """
     state = _load_cost_state()
@@ -718,8 +725,12 @@ def update_accumulated_costs(session_id, session_cost=None):
 
     billing_sessions = state.get("billing_sessions", {})
     billing_water = state.get("billing_water", {})
+    if session_id not in billing_sessions:
+        _spawn_throttled(["--sync-background", "--billing-day", str(BILLING_DAY)], SYNC_STAMP_FILE, SYNC_BACKOFF)
     if session_cost is not None:
         billing_sessions[session_id] = session_cost
+    if session_water is not None:
+        billing_water[session_id] = session_water
     state["billing_sessions"] = billing_sessions
     state["billing_water"] = billing_water
 
@@ -755,21 +766,26 @@ def _maybe_spawn_pricing_refresh():
     """
     if _pricing_cache_fresh():
         return
+    _spawn_throttled(["--refresh-pricing"], PRICING_REFRESH_STAMP_FILE, PRICING_REFRESH_BACKOFF)
+
+
+def _spawn_throttled(flags, stamp_file, backoff):
+    """Run this script with flags in a detached child, at most once per backoff seconds."""
     now = time.time()
     try:
-        if now - os.path.getmtime(PRICING_REFRESH_STAMP_FILE) < PRICING_REFRESH_BACKOFF:
+        if now - os.path.getmtime(stamp_file) < backoff:
             return  # attempted recently — back off whether or not it succeeded
     except OSError:
         pass  # no stamp yet → proceed
     try:
-        os.makedirs(os.path.dirname(PRICING_REFRESH_STAMP_FILE), exist_ok=True)
-        with open(PRICING_REFRESH_STAMP_FILE, "w") as f:
+        os.makedirs(os.path.dirname(stamp_file), exist_ok=True)
+        with open(stamp_file, "w") as f:
             f.write(str(now))
     except OSError:
         pass
     try:
         subprocess.Popen(
-            [sys.executable, "-m", "claude_counter.statusline", "--refresh-pricing"],
+            [sys.executable, "-m", "claude_counter.statusline", *flags],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL, start_new_session=True,
         )
@@ -883,6 +899,38 @@ def _estimate_water_from_usage(usage, model_str):
     total_input = input_tokens + cache_read + cache_creation
     water = estimate_water_liters(model_str, total_input, output_tokens, cache_read, cache_creation)
     return water + sum(_estimate_water_from_usage(it, it.get("model")) for it in _advisor_usages(usage))
+
+
+def transcript_water(transcript_path):
+    """Water of the requests in a session's transcript and its subagents' transcripts.
+
+    Reads the files whole on every call: a 38 MB transcript takes about 30 ms.
+    """
+    paths = [transcript_path] + globmod.glob(
+        os.path.join(os.path.splitext(transcript_path)[0], "subagents", "*.jsonl")
+    )
+    requests = {}  # requestId -> (usage, model) of its final streaming update
+    for path in paths:
+        try:
+            with open(path, "rb") as f:
+                for line in f:
+                    if b'"usage"' not in line:  # skips parsing most lines
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        continue
+                    msg = entry.get("message") or {}
+                    usage = msg.get("usage")
+                    req_id = entry.get("requestId")
+                    if entry.get("type") != "assistant" or not usage or not req_id:
+                        continue
+                    prev = requests.get(req_id)
+                    if prev is None or usage.get("output_tokens", 0) > prev[0].get("output_tokens", 0):
+                        requests[req_id] = (usage, msg.get("model", ""))
+        except OSError:
+            continue
+    return sum(_estimate_water_from_usage(usage, model) for usage, model in requests.values())
 
 
 def sync_historical_costs():
@@ -999,6 +1047,15 @@ def sync_historical_costs():
 
     # Now bucket sessions into windows based on their latest timestamp
     state = _load_cost_state()
+    stored_costs = state.get("billing_sessions", {})
+    stored_water = state.get("billing_water", {})
+
+    # While a session runs, the status line stores Claude Code's own total,
+    # which also counts calls the transcript leaves out. A session without a
+    # cost-state keeps that stored value when it is larger.
+    for sid in session_costs.keys() - cost_states.keys():
+        session_costs[sid] = max(session_costs[sid], stored_costs.get(sid, 0.0))
+        session_water[sid] = max(session_water.get(sid, 0.0), stored_water.get(sid, 0.0))
 
     five_hour_sessions = {}
     seven_day_sessions = {}
@@ -1023,6 +1080,15 @@ def sync_historical_costs():
             seven_day_sessions[sid] = cost
         if ts_epoch >= five_hour_cutoff:
             five_hour_sessions[sid] = cost
+
+    # Keep this period's sessions whose transcripts the scan did not find,
+    # such as ones Claude Code has deleted, unless a continuation holds them.
+    if state.get("billing_period") == billing_period:
+        for sid in (stored_costs.keys() | stored_water.keys()) - session_costs.keys() - folded:
+            if sid in stored_costs:
+                billing_sessions[sid] = stored_costs[sid]
+            if sid in stored_water:
+                billing_water[sid] = stored_water[sid]
 
     # Preserve resets_at from existing state (sync doesn't know these)
     state["five_hour_sessions"] = five_hour_sessions
@@ -1145,6 +1211,11 @@ def main():
         "--refresh-pricing", action="store_true", help=argparse.SUPPRESS,
     )
     parser.add_argument(
+        # Internal: --sync without the pricing fetch and output, run as a
+        # detached child when a session starts.
+        "--sync-background", action="store_true", help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--billing-day", type=int, default=None,
         help="Day of month billing resets (default: 1)",
     )
@@ -1174,6 +1245,10 @@ def main():
             f"Done: {sessions} sessions, {fmt_cost(total)} / {WATER_ICON}{fmt_water(water)} billing period total",
             file=sys.stderr,
         )
+        return
+
+    if args.sync_background:
+        sync_historical_costs()
         return
 
     # ── Pricing refresh worker (detached child, no statusline output) ──
@@ -1283,11 +1358,16 @@ def main():
     total_tokens = total_input + total_output
     pct_str = fmt_pct(used_pct, args.pct_color)
 
-    # Session cost as Claude Code estimates it (grouped with token bar, no separator)
+    # Session cost as Claude Code estimates it, and water from the session's
+    # transcript (grouped with token bar, no separator)
     cost_str = ""
     session_api_cost = (data.get("cost") or {}).get("total_cost_usd") or 0.0
     if not args.no_cost and session_api_cost > 0:
         cost_str = f" {DIM}{fmt_cost(session_api_cost)}{RESET}"
+    transcript_path = data.get("transcript_path")
+    water = transcript_water(transcript_path) if transcript_path and not args.no_water else 0.0
+    if water > 0:
+        cost_str += f" {DIM}{WATER_ICON}{fmt_water(water)}{RESET}"
 
     if context_size >= 1_000_000:
         ctx_size_label = f"{context_size // 1_000_000}M"
@@ -1317,7 +1397,7 @@ def main():
     session_id = data.get("session_id") or ""
     cost_upd = session_api_cost if not args.no_cost and session_api_cost > 0 else None
     if session_id:
-        billing_cost, billing_water = update_accumulated_costs(session_id, cost_upd)
+        billing_cost, billing_water = update_accumulated_costs(session_id, cost_upd, water or None)
 
     if five_hour or seven_day:
         session_pct = five_hour.get("used_percentage", 0)

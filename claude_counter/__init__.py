@@ -1,3 +1,3 @@
 """Claude Counter — Claude Code statusline."""
 
-__version__ = "2.8.11"
+__version__ = "2.8.12"
