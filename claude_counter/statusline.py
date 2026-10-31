@@ -923,6 +923,12 @@ def main():
         help="Disable 5-hour session limit segment",
     )
     parser.add_argument(
+        "--hide-absent-5h", action=argparse.BooleanOptionalAction, default=True,
+        help="Hide the 5-hour segment when Claude Code reports no 5-hour "
+             "window, as for Ultra accounts; --no-hide-absent-5h shows 5h ∞ "
+             "(default: on)",
+    )
+    parser.add_argument(
         "--no-7d", action="store_true",
         help="Disable 7-day weekly limit segment",
     )
@@ -1142,7 +1148,13 @@ def main():
 
         # Usage bars
         if not args.no_usage:
-            if session_pct is not None and not args.no_5h:
+            # Ultra accounts have no 5-hour limit, so Claude Code sends no
+            # five_hour window. It also drops the window between its reset
+            # and the next API response.
+            if not five_hour:
+                if not args.no_5h and not args.hide_absent_5h:
+                    parts.append("5h ∞")
+            elif session_pct is not None and not args.no_5h:
                 parts.append(usage_segment(
                     "5h", session_pct, session_reset, args.style,
                     show_pct=args.percent, color=args.pct_color,

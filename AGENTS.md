@@ -41,6 +41,7 @@ Single Python package, no external dependencies. Installable directly from git v
 | `--git` / `--no-git` | on | Show current git branch |
 | `--no-usage` | off | Disable rate limit usage bars |
 | `--no-5h` | off | Disable 5-hour session limit segment |
+| `--hide-absent-5h` / `--no-hide-absent-5h` | on | Hide the 5-hour segment when no 5-hour window is reported (Ultra); `--no-hide-absent-5h` shows `5h ∞` |
 | `--no-7d` | off | Disable 7-day weekly limit segment |
 | `--percent` / `--no-percent` | on | Show usage percentages |
 | `--pct-color` / `--no-pct-color` | on | Color percentages green (≤50%) → orange (≤80%) → red |
@@ -53,7 +54,7 @@ Single Python package, no external dependencies. Installable directly from git v
 
 ## Rate limit usage
 
-Session (5h) and weekly (7d) utilization is read from the native `rate_limits` field in Claude Code's stdin JSON (≥2.1.80). If absent, usage bars are not shown.
+Session (5h) and weekly (7d) utilization is read from the native `rate_limits` field in Claude Code's stdin JSON (≥2.1.80). If absent, usage bars are not shown. A 7-day window without a 5-hour window hides the 5h segment, or shows `5h ∞` with `--no-hide-absent-5h`: Ultra accounts have no 5-hour limit, and Claude Code also drops the 5-hour window between its reset and the next API response.
 
 ## Cost estimation
 

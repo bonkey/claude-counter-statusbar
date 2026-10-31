@@ -17,7 +17,7 @@ A statusline for [Claude Code](https://claude.ai/code) showing token usage, cost
 - **Colored percentages** — Shaded green → orange → red as usage grows (`--no-pct-color` to disable)
 - **Estimated API cost** — What this session would cost on the Anthropic API (per-model pricing with cache discounts)
 - **Water footprint** — Estimated liters of water your tokens consume (data-center cooling + electricity generation), per session and per billing period
-- **Session usage bar (5h)** — Rolling 5-hour rate limit utilization with reset countdown + accumulated API cost
+- **Session usage bar (5h)** — Rolling 5-hour rate limit utilization with reset countdown + accumulated API cost. Hidden on Ultra accounts, which have no 5-hour limit, or shown as `5h ∞` with `--no-hide-absent-5h`
 - **Weekly usage bar (7d)** — Rolling 7-day rate limit utilization with reset countdown + accumulated API cost
 - **Billing period total** — Accumulated cost for the current billing cycle (resets on configurable billing day)
 - **6 bar styles** — `dots` (default), `text`, `bar`, `ball`, `capped`, `filled`, or `off` for no bars
@@ -70,6 +70,7 @@ Do not put `uvx --from git+…` in the status line command. uv then fetches the 
 | `--git` / `--no-git` | on | Show current git branch |
 | `--no-usage` | off | Disable rate limit usage bars |
 | `--no-5h` | off | Disable the 5-hour session limit segment |
+| `--hide-absent-5h` / `--no-hide-absent-5h` | on | Hide the 5-hour segment when Claude Code reports no 5-hour window, as for Ultra accounts. `--no-hide-absent-5h` shows `5h ∞` instead |
 | `--no-7d` | off | Disable the 7-day weekly limit segment |
 | `--percent` / `--no-percent` | on | Show usage percentages |
 | `--pct-color` / `--no-pct-color` | on | Color percentages green (≤50%) → orange (≤80%) → red |
@@ -177,7 +178,7 @@ Treat it as an order-of-magnitude estimate: published figures span ~1000× depen
 
 Model pricing is fetched automatically from [LiteLLM](https://github.com/BerriAI/litellm) and cached in `~/.claude/.claude-counter-pricing-cache.json` (refreshed every 24 hours). The refresh runs in a **detached background process** — the status line itself never makes a blocking network call, so a slow or failing network can't stall or garble rendering. (Attempts are throttled to once per hour and tracked in `~/.claude/.claude-counter-pricing-refresh`.)
 
-Rate limit utilization (session 5h and weekly 7d) is read from the native `rate_limits` field provided by Claude Code ≥2.1.80. If the field is absent (older versions), usage bars are simply not shown.
+Rate limit utilization (session 5h and weekly 7d) is read from the native `rate_limits` field provided by Claude Code ≥2.1.80. If the field is absent (older versions), usage bars are simply not shown. When `rate_limits` has a 7-day window but no 5-hour window, the 5h segment is hidden, or shows `5h ∞` with `--no-hide-absent-5h`. Ultra accounts have no 5-hour limit, so Claude Code sends no 5-hour window for them. Claude Code also drops the 5-hour window between its reset and the next API response, so a Pro or Max account can briefly lose its 5h segment, or show `5h ∞`, after a long idle period.
 
 ### Terminal rendering
 
