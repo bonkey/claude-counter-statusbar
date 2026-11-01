@@ -45,7 +45,7 @@ Single Python package, no external dependencies. Installable directly from git v
 | `--git` / `--no-git` | on | Show current git branch |
 | `--no-usage` | off | Disable rate limit usage bars |
 | `--no-5h` | off | Disable 5-hour session limit segment |
-| `--hide-absent-5h` / `--no-hide-absent-5h` | on | Hide the 5-hour segment when no 5-hour window is reported (Ultra); `--no-hide-absent-5h` shows `5h ∞` |
+| `--hide-absent-5h` / `--no-hide-absent-5h` | on | Hide the 5-hour segment when no 5-hour window is reported and none reset in the last 5 hours (Ultra); `--no-hide-absent-5h` shows `5h ∞` |
 | `--no-7d` | off | Disable 7-day weekly limit segment |
 | `--percent` / `--no-percent` | on | Show usage percentages |
 | `--pct-color` / `--no-pct-color` | on | Color percentages green (≤50%) → orange (≤80%) → red |
@@ -58,7 +58,7 @@ Single Python package, no external dependencies. Installable directly from git v
 
 ## Rate limit usage
 
-Session (5h) and weekly (7d) utilization is read from the native `rate_limits` field in Claude Code's stdin JSON (≥2.1.80). If absent, usage bars are not shown. A 7-day window without a 5-hour window hides the 5h segment, or shows `5h ∞` with `--no-hide-absent-5h`: Ultra accounts have no 5-hour limit, and Claude Code also drops the 5-hour window between its reset and the next API response. A missing 7-day window hides the 7d segment.
+Session (5h) and weekly (7d) utilization is read from the native `rate_limits` field in Claude Code's stdin JSON (≥2.1.80). Older versions send no `rate_limits`, so they show no usage bars. Claude Code drops a window once its `resets_at` passes and reports it again with the next API response. Each reported `resets_at` is stored under `rate_limit_resets` in the cost state, and a missing window whose stored reset passed less than one window length ago (5 hours, 7 days) shows `0%` with no countdown. Otherwise a missing window is hidden: Ultra accounts have no 5-hour limit, so their 5h segment is hidden, or shows `5h ∞` with `--no-hide-absent-5h`.
 
 ## Cost estimation
 

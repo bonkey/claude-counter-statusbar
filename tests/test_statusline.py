@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -426,6 +427,68 @@ class PricingTests(IsolatedTestCase):
         with open(sl.PRICING_CACHE_FILE, "w") as f:
             json.dump({"pricing": {"opus": [9.0, 9.0]}}, f)
         self.assertEqual(sl._load_pricing()["opus"], sl.FALLBACK_PRICING["opus"])
+
+
+class RateLimitTests(IsolatedTestCase):
+    def setUp(self):
+        super().setUp()
+        self.now = datetime.now(timezone.utc).timestamp()
+
+    def window(self, pct, hours_left):
+        return {"used_percentage": pct, "resets_at": int(self.now + hours_left * 3600)}
+
+    def segments(self, rate_limits=None, *args):
+        """The 5h and 7d segments as [label, percent, reset time], without colors."""
+        extra = {} if rate_limits is None else {"rate_limits": rate_limits}
+        out = re.sub(r"\033\[[0-9;]*m", "", self.render(payload(**extra), "--style=off", "--no-pct-color", *args))
+        return [s.split() for s in out.split("●") if s.split()[:1] in (["5h"], ["7d"])]
+
+    def test_shows_reported_windows(self):
+        segs = self.segments({"five_hour": self.window(42, 2), "seven_day": self.window(7, 50)})
+        self.assertEqual([s[:2] for s in segs], [["5h", "42%"], ["7d", "7%"]])
+        self.assertTrue(all(len(s) == 3 for s in segs))
+
+    def test_shows_a_reported_window_at_zero(self):
+        segs = self.segments({"five_hour": self.window(0, 5), "seven_day": self.window(7, 50)})
+        self.assertEqual(segs[0][:2], ["5h", "0%"])
+
+    def test_hides_a_5h_window_never_reported(self):
+        self.assertEqual([s[:2] for s in self.segments({"seven_day": self.window(7, 50)})], [["7d", "7%"]])
+
+    def test_no_hide_absent_5h_shows_infinity(self):
+        segs = self.segments({"seven_day": self.window(7, 50)}, "--no-hide-absent-5h")
+        self.assertEqual(segs[0], ["5h", "∞"])
+
+    def test_hides_a_7d_window_never_reported(self):
+        self.assertEqual([s[0] for s in self.segments({"five_hour": self.window(42, 2)})], ["5h"])
+
+    def test_shows_nothing_without_rate_limits(self):
+        self.assertEqual(self.segments(), [])
+
+    def test_remembers_each_reported_reset(self):
+        five, seven = self.window(42, 2), self.window(7, 50)
+        self.segments({"five_hour": five, "seven_day": seven})
+        self.assertEqual(
+            self.read_state()["rate_limit_resets"],
+            {"five_hour": five["resets_at"], "seven_day": seven["resets_at"]},
+        )
+
+    def test_shows_a_reset_5h_window_at_zero(self):
+        self.write_state(rate_limit_resets={"five_hour": self.now - 3600})
+        segs = self.segments({"seven_day": self.window(7, 50)})
+        self.assertEqual(segs[0], ["5h", "0%"])
+
+    def test_shows_reset_windows_without_rate_limits(self):
+        self.write_state(rate_limit_resets={"five_hour": self.now - 60, "seven_day": self.now - 60})
+        self.assertEqual(self.segments(), [["5h", "0%"], ["7d", "0%"]])
+
+    def test_forgets_a_reset_one_window_length_later(self):
+        self.write_state(rate_limit_resets={"five_hour": self.now - 5 * 3600 - 60, "seven_day": self.now - 7 * 86400 - 60})
+        self.assertEqual(self.segments(), [])
+
+    def test_hides_an_absent_window_before_its_reset(self):
+        self.write_state(rate_limit_resets={"five_hour": self.now + 3600})
+        self.assertEqual([s[0] for s in self.segments({"seven_day": self.window(7, 50)})], ["7d"])
 
 
 if __name__ == "__main__":

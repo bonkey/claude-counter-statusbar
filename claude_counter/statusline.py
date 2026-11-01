@@ -743,6 +743,37 @@ def update_accumulated_costs(session_id, session_cost=None, session_water=None, 
     return sum(billing_sessions.values()), sum(billing_water.values())
 
 
+RATE_LIMIT_WINDOWS = {"five_hour": 5 * 3600, "seven_day": 7 * 86400}
+
+
+def rate_limit_windows(rate_limits):
+    """Return the five_hour and seven_day windows, with a reset window at 0%.
+
+    Claude Code drops a window once its resets_at passes and reports it again
+    with the next API response. Each reported resets_at is stored. A missing
+    window whose stored reset passed less than one window length ago is
+    returned at 0% with no reset time. A window that was never reported, such
+    as the 5-hour one on Ultra, stays missing.
+    """
+    state = _load_cost_state()
+    stored = state.get("rate_limit_resets", {})
+    resets = dict(stored)
+    now = time.time()
+    windows = []
+    for name, length in RATE_LIMIT_WINDOWS.items():
+        window = rate_limits.get(name) or {}
+        reset = resets.get(name)
+        if isinstance(window.get("resets_at"), (int, float)):
+            resets[name] = window["resets_at"]
+        elif not window and isinstance(reset, (int, float)) and reset <= now < reset + length:
+            window = {"used_percentage": 0}
+        windows.append(window)
+    if resets != stored:
+        state["rate_limit_resets"] = resets
+        _save_cost_state(state)
+    return windows
+
+
 # ── Historical transcript sync ───────────────────────────────────────
 TRANSCRIPT_DIR = os.path.expanduser("~/.claude/projects")
 LITELLM_PRICING_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
@@ -1222,7 +1253,8 @@ def main():
     parser.add_argument(
         "--hide-absent-5h", action=argparse.BooleanOptionalAction, default=True,
         help="Hide the 5-hour segment when Claude Code reports no 5-hour "
-             "window, as for Ultra accounts; --no-hide-absent-5h shows 5h ∞ "
+             "window and none reset in the last 5 hours, as for Ultra "
+             "accounts; --no-hide-absent-5h shows 5h ∞ "
              "(default: on)",
     )
     parser.add_argument(
@@ -1440,8 +1472,7 @@ def main():
     billing_water = 0.0
 
     rate_limits = data.get("rate_limits") or {}
-    five_hour = rate_limits.get("five_hour") or {}
-    seven_day = rate_limits.get("seven_day") or {}
+    five_hour, seven_day = rate_limit_windows(rate_limits)
 
     # Accumulate billing cost (independent of rate_limits presence)
     session_id = data.get("session_id") or ""
@@ -1459,8 +1490,7 @@ def main():
         # Usage bars
         if not args.no_usage:
             # Ultra accounts have no 5-hour limit, so Claude Code sends no
-            # five_hour window. It also drops the window between its reset
-            # and the next API response.
+            # five_hour window.
             if not five_hour:
                 if not args.no_5h and not args.hide_absent_5h:
                     parts.append(f"{fmt_label('5h')} ∞")

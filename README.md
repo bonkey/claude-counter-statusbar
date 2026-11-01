@@ -74,7 +74,7 @@ Do not put `uvx --from git+…` in the status line command. uv then fetches the 
 | `--git` / `--no-git` | on | Show current git branch |
 | `--no-usage` | off | Disable rate limit usage bars |
 | `--no-5h` | off | Disable the 5-hour session limit segment |
-| `--hide-absent-5h` / `--no-hide-absent-5h` | on | Hide the 5-hour segment when Claude Code reports no 5-hour window, as for Ultra accounts. `--no-hide-absent-5h` shows `5h ∞` instead |
+| `--hide-absent-5h` / `--no-hide-absent-5h` | on | Hide the 5-hour segment when Claude Code reports no 5-hour window and none reset in the last 5 hours, as for Ultra accounts. `--no-hide-absent-5h` shows `5h ∞` instead |
 | `--no-7d` | off | Disable the 7-day weekly limit segment |
 | `--percent` / `--no-percent` | on | Show usage percentages |
 | `--pct-color` / `--no-pct-color` | on | Color percentages green (≤50%) → orange (≤80%) → red |
@@ -182,7 +182,7 @@ Treat it as an order-of-magnitude estimate: published figures span ~1000× depen
 
 Model pricing (input, output, cache read, 5-minute and 1-hour cache write) is fetched automatically from [LiteLLM](https://github.com/BerriAI/litellm) and cached in `~/.claude/.claude-counter-pricing-cache.json` (refreshed every 24 hours). The refresh runs in a **detached background process** — the status line itself never makes a blocking network call, so a slow or failing network can't stall or garble rendering. (Attempts are throttled to once per hour and tracked in `~/.claude/.claude-counter-pricing-refresh`.)
 
-Rate limit utilization (session 5h and weekly 7d) is read from the native `rate_limits` field provided by Claude Code ≥2.1.80. If the field is absent (older versions), usage bars are simply not shown. When `rate_limits` has a 7-day window but no 5-hour window, the 5h segment is hidden, or shows `5h ∞` with `--no-hide-absent-5h`. Ultra accounts have no 5-hour limit, so Claude Code sends no 5-hour window for them. Claude Code also drops the 5-hour window between its reset and the next API response, so a Pro or Max account can briefly lose its 5h segment, or show `5h ∞`, after a long idle period. When the 7-day window is missing, the 7d segment is hidden.
+Rate limit utilization (session 5h and weekly 7d) is read from the native `rate_limits` field provided by Claude Code ≥2.1.80. If the field is absent (older versions), usage bars are simply not shown. Claude Code drops a window from `rate_limits` once its reset time passes, and reports it again with the next API response, which starts a new window. The status line stores each window's reset time in `~/.claude/.claude-counter-cost-state.json`, so a missing window that reset less than one window length ago (5 hours or 7 days) shows `0%` with no countdown. A window that was not reported in that time is hidden. Ultra accounts have no 5-hour limit, so their 5h segment is hidden, or shows `5h ∞` with `--no-hide-absent-5h`. After a switch to an account without a window, the previous account's reset can show `0%` for up to one window length.
 
 ### Terminal rendering
 
