@@ -431,6 +431,21 @@ def get_git_worktree(cwd):
     return None, None
 
 
+def get_wt_status(cwd):
+    """Return worktrunk's status symbols for the worktree at cwd, or None without wt."""
+    try:
+        # The pinned schema keeps a `[list] json-schema = 1` user config from changing the shape.
+        result = subprocess.run(
+            ["wt", "--config-set", "list.json-schema=2", "list", "statusline", "--format=json"],
+            cwd=cwd, capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0:
+            return _sanitize(json.loads(result.stdout)["items"][0]["display"]["symbols"]) or None
+    except (OSError, subprocess.TimeoutExpired, ValueError, LookupError, TypeError):
+        pass
+    return None
+
+
 # RGB values for bar colors, used for truecolor gradient shading
 _COLOR_RGB = {
     "blue":   (80, 120, 220),
@@ -1384,6 +1399,10 @@ def main():
                 git_part = f"{ORANGE} {branch}{RESET}"
             elif not session_name:
                 git_part = f"{DIM} {branch}{RESET}"
+            # In a linked worktree, worktrunk's status follows the branch, or the badges when it is hidden.
+            wt_status = get_wt_status(cwd) if worktree_name else None
+            if wt_status:
+                git_part += f" {wt_status}"
     badges = []
     if dir_name and args.powerline:
         parts.append(dir_name)

@@ -491,5 +491,73 @@ class RateLimitTests(IsolatedTestCase):
         self.assertEqual([s[0] for s in self.segments({"seven_day": self.window(7, 50)})], ["7d"])
 
 
+class GitSegmentTests(IsolatedTestCase):
+    WORKTREE = ("repo.feature-x", "repo")
+
+    def line(self, branch, worktree=(None, None), session_name=None, wt_symbols=None, *args):
+        """The rendered line without colors.
+
+        wt_symbols is what `wt list statusline` reports; None means wt is not installed.
+        """
+        def run(cmd, **kwargs):
+            if wt_symbols is None:
+                raise FileNotFoundError(cmd[0])
+            out = json.dumps({"schema": 2, "items": [{"display": {"symbols": wt_symbols}}]})
+            return sl.subprocess.CompletedProcess(cmd, 0, out, "")
+
+        extra = {"session_name": session_name} if session_name else {}
+        with mock.patch.object(sl, "get_git_branch", return_value=branch), \
+                mock.patch.object(sl, "get_git_worktree", return_value=worktree), \
+                mock.patch.object(sl, "get_git_short_sha", return_value="abc1234"), \
+                mock.patch.object(sl.subprocess, "run", side_effect=run) as self.run_mock:
+            return re.sub(r"\033\[[0-9;]*m", "", self.render(payload(**extra), "--git", "--style=off", *args))
+
+    def segments(self, *args, **kwargs):
+        """The segments before the model, as lists of words."""
+        segs = [s.split() for s in self.line(*args, **kwargs).split("●")]
+        return segs[:next(i for i, s in enumerate(segs) if "Opus" in s)]
+
+    def test_main_checkout_shows_its_branch(self):
+        self.assertEqual(self.segments("main"), [["app"], ["main"]])
+
+    def test_worktree_shows_the_repo_name(self):
+        self.assertEqual(self.segments("feature/x", self.WORKTREE), [["repo"], ["feature/x"]])
+
+    def test_session_name_hides_the_branch_its_worktree_is_named_for(self):
+        self.assertEqual(self.segments("feature/x", self.WORKTREE, "fix-x"), [["repo", "fix-x"]])
+
+    def test_worktree_on_another_branch_shows_it(self):
+        self.assertEqual(self.segments("other", self.WORKTREE, "fix-x"), [["repo", "fix-x"], ["other"]])
+
+    def test_detached_head_shows_its_short_sha(self):
+        self.assertEqual(self.segments("HEAD", self.WORKTREE, "fix-x"), [["repo", "fix-x"], ["abc1234"]])
+
+    def test_wt_status_follows_a_shown_branch(self):
+        self.assertEqual(self.segments("feature/x", self.WORKTREE, wt_symbols="!?↑"), [["repo"], ["feature/x", "!?↑"]])
+        self.run_mock.assert_called_once()
+        self.assertEqual(
+            self.run_mock.call_args.args[0],
+            ["wt", "--config-set", "list.json-schema=2", "list", "statusline", "--format=json"],
+        )
+        self.assertEqual(self.run_mock.call_args.kwargs["cwd"], "/tmp/app")
+
+    def test_wt_status_follows_the_badges_when_the_branch_is_hidden(self):
+        self.assertEqual(self.segments("feature/x", self.WORKTREE, "fix-x", "!?↑"), [["repo", "fix-x"], ["!?↑"]])
+
+    def test_wt_status_follows_a_detached_head(self):
+        self.assertEqual(self.segments("HEAD", self.WORKTREE, "fix-x", "⊘↑"), [["repo", "fix-x"], ["abc1234", "⊘↑"]])
+
+    def test_wt_status_shares_the_branch_segment_in_powerline(self):
+        line = self.line("feature/x", self.WORKTREE, None, "!?↑", "--powerline")
+        self.assertTrue(line.startswith(f" repo {sl.POWERLINE_ARROW} feature/x !?↑ {sl.POWERLINE_SOFT_ARROW}"), line)
+
+    def test_clean_worktree_adds_no_status(self):
+        self.assertEqual(self.segments("feature/x", self.WORKTREE, "fix-x", ""), [["repo", "fix-x"]])
+
+    def test_main_checkout_runs_no_wt(self):
+        self.assertEqual(self.segments("main", wt_symbols="^|"), [["app"], ["main"]])
+        self.run_mock.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

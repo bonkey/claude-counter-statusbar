@@ -14,6 +14,7 @@ A statusline for [Claude Code](https://claude.ai/code) showing token usage, cost
   - Linked worktree whose folder ends with the branch (`<repo>.<branch>`, `/` as `-`, as worktrunk names it): only while the session has no name
   - Linked worktree on another branch: in orange
   - Detached HEAD: the short commit hash, in orange
+  - Linked worktree, with [worktrunk](https://worktrunk.dev) installed: its status symbols from `wt list statusline` after the branch, or after the badges when the branch is hidden (`!?↑` for modified and untracked files, ahead of the default branch; see [Status symbols](https://worktrunk.dev/list/#status-symbols))
 - **Token progress bar** — Context usage with color-coded warnings (blue → yellow → red)
 - **Colored percentages** — Shaded green → orange → red as usage grows (`--no-pct-color` to disable)
 - **Estimated API cost** — What this session would cost on the Anthropic API, as Claude Code estimates it, shown as `💰0.10`

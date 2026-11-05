@@ -15,6 +15,7 @@ Claude Counter is a Claude Code statusline script that displays:
 - Current directory and model name
 - Session name next to the directory, when Claude Code reports one
 - Git branch when the line does not already imply it: main checkout, a worktree whose folder names another branch (orange), detached HEAD (orange hash), or no session name (on by default, `--no-git` to disable)
+- In a linked worktree, worktrunk's status symbols (`wt list statusline`) after the branch, or after the badges when the branch is hidden, when `wt` is installed
 - Token count with progress bar (6 styles, or `off`) + cache status
 - Percentages shaded green → orange → red (`--no-pct-color` to disable)
 - Bold segment labels (`ctx`, `5h`, `7d`)
